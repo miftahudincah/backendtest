@@ -1,11 +1,12 @@
-// index.js - VERSION 3.0 (BACKEND PROXY - SECURE API KEYS)
+// index.js - VERSION 3.2 (BACKEND PROXY COMPLETE)
 // Backend untuk Sistem Absensi IoT
 // Semua API Key disimpan di environment variables (AMAN)
 // Mendukung: 
-// - Groq AI Chat (via backend proxy)
+// - Groq AI Chat
 // - Storage (Supabase + ImgBB fallback)
 // - WhatsApp Gateway (Fonnte)
 // - Firebase Admin SDK
+// - Upload & delete file via backend proxy
 // ============================================================================
 
 const express = require('express');
@@ -67,12 +68,12 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID || "1:123456789:web:abcdef"
 };
 
-// GROQ API Configuration (dari environment variables)
+// GROQ API Configuration
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
-// OpenAI Configuration (dari environment variables)
+// OpenAI Configuration
 const OPENAI_CONFIG = {
     apiKey: process.env.OPENAI_API_KEY,
     model: 'gpt-4o-mini',
@@ -81,10 +82,10 @@ const OPENAI_CONFIG = {
     apiUrl: 'https://api.openai.com/v1/chat/completions'
 };
 
-// IMGBB Configuration (dari environment variables)
+// IMGBB Configuration
 const IMGBB_KEY = process.env.IMGBB_KEY;
 
-// WhatsApp Configuration (Fonnte) - dari environment variables
+// WhatsApp Configuration (Fonnte)
 const WHATSAPP_CONFIG = {
     gateway: 'fonnte',
     fonnteApiKey: process.env.FONNTE_API_KEY,
@@ -96,7 +97,7 @@ const WHATSAPP_CONFIG = {
     senderNumber: ''
 };
 
-// Supabase Configuration (dari environment variables)
+// Supabase Configuration
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
@@ -210,7 +211,7 @@ async function uploadToSupabaseStorage(fileBuffer, fileName, folder = 'uploads',
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 8);
     
-    if (userId && userId !== 'null') {
+    if (userId && userId !== 'null' && userId !== 'undefined') {
       fullPath = `${folder}/${userId}/${timestamp}_${randomStr}.${ext}`;
     } else {
       fullPath = `${folder}/${timestamp}_${randomStr}.${ext}`;
@@ -468,11 +469,101 @@ app.get('/api/firebase-config', (req, res) => {
   });
 });
 
-// ============ AI CHAT ENDPOINTS ============
+// ============ STORAGE ENDPOINTS (via backend proxy - AMAN) ============
+
+/**
+ * Upload image (main endpoint)
+ * Frontend akan memanggil endpoint ini untuk upload gambar
+ * Mendukung parameter: folder, userId, bucket
+ */
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+    
+    const { folder = 'uploads', userId, bucket = STORAGE_BUCKET } = req.body;
+    
+    console.log(`📤 Upload request: folder=${folder}, userId=${userId}, file=${req.file.originalname}`);
+    
+    const result = await uploadImage(
+      req.file.buffer,
+      req.file.originalname,
+      folder,
+      userId
+    );
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Image uploaded successfully',
+        data: {
+          url: result.url,
+          path: result.path || null,
+          thumb: result.thumb || null,
+          storage: result.storage || 'supabase',
+          isFallback: result.isFallback || false
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * Delete file from storage (Supabase only)
+ */
+app.post('/api/storage/delete', async (req, res) => {
+  try {
+    const { fileUrl, bucket = STORAGE_BUCKET } = req.body;
+    
+    if (!fileUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file URL provided'
+      });
+    }
+    
+    // Jika URL dari ImgBB (tidak bisa dihapus via API)
+    if (fileUrl.includes('imgbb.com') || fileUrl.includes('ibb.co')) {
+      return res.json({ 
+        success: true, 
+        message: 'ImgBB files cannot be deleted via API (auto-expire only)' 
+      });
+    }
+    
+    const result = await deleteFromStorage(fileUrl);
+    
+    res.json({
+      success: result,
+      message: result ? 'File deleted successfully' : 'File not found or already deleted'
+    });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// ============ AI CHAT ENDPOINTS (PUBLIC - NO AUTH REQUIRED) ============
 
 /**
  * AI Chat via GROQ (via backend proxy - AMAN)
- * Frontend akan memanggil endpoint ini, bukan Groq langsung
  */
 app.post('/api/ai/groq', async (req, res) => {
   const { message, systemPrompt, history = [], temperature = 0.7, maxTokens = 1024 } = req.body;
@@ -546,86 +637,6 @@ app.post('/api/ai/openai', async (req, res) => {
     res.status(500).json({
       success: false,
       error: result.error || 'OpenAI API error'
-    });
-  }
-});
-
-// ============ STORAGE ENDPOINTS (via backend proxy - AMAN) ============
-
-/**
- * Upload image (main endpoint)
- * Frontend akan memanggil endpoint ini untuk upload gambar
- */
-app.post('/api/upload', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'No image file provided'
-      });
-    }
-    
-    const { folder = 'uploads', userId } = req.body;
-    
-    const result = await uploadImage(
-      req.file.buffer,
-      req.file.originalname,
-      folder,
-      userId
-    );
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Image uploaded successfully',
-        data: {
-          url: result.url,
-          path: result.path || null,
-          thumb: result.thumb || null,
-          storage: result.storage || 'supabase',
-          isFallback: result.isFallback || false
-        }
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: result.error
-      });
-    }
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * Delete file from storage (Supabase only)
- */
-app.post('/api/storage/delete', async (req, res) => {
-  try {
-    const { fileUrl } = req.body;
-    
-    if (!fileUrl) {
-      return res.status(400).json({
-        success: false,
-        error: 'No file URL provided'
-      });
-    }
-    
-    const result = await deleteFromStorage(fileUrl);
-    
-    res.json({
-      success: result,
-      message: result ? 'File deleted successfully' : 'File not found or already deleted'
-    });
-  } catch (error) {
-    console.error('Delete error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
     });
   }
 });
@@ -937,7 +948,7 @@ app.put('/api/profile', authenticateToken, [
 });
 
 /**
- * Check-in / Check-out
+ * Check-in / Check-out with photo and WhatsApp notification
  */
 app.post('/api/attendance', authenticateToken, [
   body('type').isIn(['check_in', 'check_out']).withMessage('Type must be check_in or check_out'),
