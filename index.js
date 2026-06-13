@@ -1,3 +1,13 @@
+// index.js - VERSION 3.0 (BACKEND PROXY - SECURE API KEYS)
+// Backend untuk Sistem Absensi IoT
+// Semua API Key disimpan di environment variables (AMAN)
+// Mendukung: 
+// - Groq AI Chat (via backend proxy)
+// - Storage (Supabase + ImgBB fallback)
+// - WhatsApp Gateway (Fonnte)
+// - Firebase Admin SDK
+// ============================================================================
+
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -13,57 +23,7 @@ const { createClient } = require('@supabase/supabase-js');
 // Load environment variables
 dotenv.config();
 
-// ============ KONFIGURASI API ============
-
-// Firebase Config (for frontend reference)
-const firebaseConfig = {
-  apiKey: "AIzaSyBZg9NpbBAg8dKHkCbYf4J_2bpHH2ZJWWI",
-  authDomain: "absensi-4389a-default-rtdb.firebaseapp.com",
-  databaseURL: "https://absensi-4389a-default-rtdb.firebaseio.com",
-  projectId: "absensi-4389a-default-rtdb",
-  storageBucket: "absensi-4389a-default-rtdb.firebasestorage.app",
-  messagingSenderId: "123456789",
-  appId: "1:123456789:web:abcdef"
-};
-
-// GROQ API Configuration (UPDATED WITH NEW API KEY)
-const GROQ_API_KEY = "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";
-const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GROQ_MODEL = "llama-3.3-70b-versatile";
-
-// OpenAI Configuration
-const OPENAI_CONFIG = {
-    apiKey: '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',
-    model: 'gpt-4o-mini',
-    maxTokens: 2000,
-    temperature: 0.3,
-    apiUrl: 'https://api.openai.com/v1/chat/completions'
-};
-
-// IMGBB Configuration
-const IMGBB_KEY = "67650d8ee67ebb8bba94f3bb2c72eb4f";
-
-// WhatsApp Configuration (Fonnte)
-const WHATSAPP_CONFIG = {
-    gateway: 'fonnte',
-    fonnteApiKey: '2VoL53ZrVsDPxwDTNPdY',
-    enabled: true,
-    sendOnCheckIn: true,
-    sendOnCheckOut: true,
-    sendOnLate: true,
-    sendOnAbsent: true,
-    senderNumber: ''
-};
-
-// Supabase Configuration
-const SUPABASE_URL = 'https://hxxvyjzpcabwuvvbgftu.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_7XOS2VtvUVGjAZI8nruo8w_P9qxJNVm';
-const STORAGE_BUCKET = 'foto-absensi';
-
-// Initialize Supabase client
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// Validate required environment variables for Firebase Admin
+// ============ VALIDASI ENVIRONMENT VARIABLES ============
 const requiredEnvVars = [
   'FIREBASE_PROJECT_ID',
   'FIREBASE_PRIVATE_KEY',
@@ -72,12 +32,83 @@ const requiredEnvVars = [
   'JWT_SECRET'
 ];
 
+const optionalEnvVars = [
+  'GROQ_API_KEY',
+  'OPENAI_API_KEY',
+  'IMGBB_KEY',
+  'FONNTE_API_KEY',
+  'SUPABASE_URL',
+  'SUPABASE_ANON_KEY'
+];
+
 requiredEnvVars.forEach(varName => {
   if (!process.env[varName]) {
-    console.error(`Missing required environment variable: ${varName}`);
+    console.error(`❌ Missing required environment variable: ${varName}`);
     process.exit(1);
   }
 });
+
+optionalEnvVars.forEach(varName => {
+  if (!process.env[varName]) {
+    console.warn(`⚠️ Optional environment variable not set: ${varName}`);
+  }
+});
+
+// ============ KONFIGURASI ============
+
+// Firebase Config (for frontend reference)
+const firebaseConfig = {
+  apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBZg9NpbBAg8dKHkCbYf4J_2bpHH2ZJWWI",
+  authDomain: process.env.FIREBASE_AUTH_DOMAIN || "absensi-4389a-default-rtdb.firebaseapp.com",
+  databaseURL: process.env.FIREBASE_DATABASE_URL,
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  storageBucket: process.env.FIREBASE_STORAGE_BUCKET || "absensi-4389a-default-rtdb.firebasestorage.app",
+  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || "123456789",
+  appId: process.env.FIREBASE_APP_ID || "1:123456789:web:abcdef"
+};
+
+// GROQ API Configuration (dari environment variables)
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
+
+// OpenAI Configuration (dari environment variables)
+const OPENAI_CONFIG = {
+    apiKey: process.env.OPENAI_API_KEY,
+    model: 'gpt-4o-mini',
+    maxTokens: 2000,
+    temperature: 0.3,
+    apiUrl: 'https://api.openai.com/v1/chat/completions'
+};
+
+// IMGBB Configuration (dari environment variables)
+const IMGBB_KEY = process.env.IMGBB_KEY;
+
+// WhatsApp Configuration (Fonnte) - dari environment variables
+const WHATSAPP_CONFIG = {
+    gateway: 'fonnte',
+    fonnteApiKey: process.env.FONNTE_API_KEY,
+    enabled: process.env.WHATSAPP_ENABLED === 'true',
+    sendOnCheckIn: true,
+    sendOnCheckOut: true,
+    sendOnLate: true,
+    sendOnAbsent: true,
+    senderNumber: ''
+};
+
+// Supabase Configuration (dari environment variables)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
+
+// Initialize Supabase client (jika dikonfigurasi)
+let supabase = null;
+if (SUPABASE_URL && SUPABASE_ANON_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  console.log('✅ Supabase client initialized');
+} else {
+  console.warn('⚠️ Supabase not configured, using ImgBB only');
+}
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -102,9 +133,9 @@ if (!admin.apps.length) {
       credential: admin.credential.cert(serviceAccount),
       databaseURL: process.env.FIREBASE_DATABASE_URL
     });
-    console.log('Firebase Admin initialized successfully');
+    console.log('✅ Firebase Admin initialized successfully');
   } catch (error) {
-    console.error('Firebase initialization error:', error);
+    console.error('❌ Firebase initialization error:', error);
     process.exit(1);
   }
 }
@@ -131,8 +162,14 @@ app.use((req, res, next) => {
 
 // ============ HELPER FUNCTIONS ============
 
-// Upload image to IMGBB
+/**
+ * Upload image to IMGBB (fallback)
+ */
 async function uploadToImgbb(fileBuffer, fileName) {
+  if (!IMGBB_KEY) {
+    return { success: false, error: 'IMGBB_KEY not configured' };
+  }
+  
   try {
     const formData = new FormData();
     formData.append('image', fileBuffer.toString('base64'));
@@ -159,10 +196,112 @@ async function uploadToImgbb(fileBuffer, fileName) {
   }
 }
 
-// Send WhatsApp message via Fonnte
+/**
+ * Upload image to Supabase Storage
+ */
+async function uploadToSupabaseStorage(fileBuffer, fileName, folder = 'uploads', userId = null) {
+  if (!supabase) {
+    return { success: false, error: 'Supabase not configured' };
+  }
+  
+  try {
+    let fullPath;
+    const ext = fileName.split('.').pop();
+    const timestamp = Date.now();
+    const randomStr = Math.random().toString(36).substring(2, 8);
+    
+    if (userId && userId !== 'null') {
+      fullPath = `${folder}/${userId}/${timestamp}_${randomStr}.${ext}`;
+    } else {
+      fullPath = `${folder}/${timestamp}_${randomStr}.${ext}`;
+    }
+    
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(fullPath, fileBuffer, {
+        cacheControl: '3600',
+        contentType: 'image/jpeg',
+        upsert: false
+      });
+    
+    if (error) throw error;
+    
+    const { data: { publicUrl } } = supabase.storage
+      .from(STORAGE_BUCKET)
+      .getPublicUrl(fullPath);
+    
+    return {
+      success: true,
+      url: publicUrl,
+      path: fullPath,
+      storage: 'supabase'
+    };
+  } catch (error) {
+    console.error('Supabase upload error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Main upload handler (try Supabase first, fallback to ImgBB)
+ */
+async function uploadImage(fileBuffer, fileName, folder = 'uploads', userId = null) {
+  // Coba upload ke Supabase dulu jika tersedia
+  if (supabase) {
+    const result = await uploadToSupabaseStorage(fileBuffer, fileName, folder, userId);
+    if (result.success) {
+      return { ...result, isFallback: false };
+    }
+    console.warn('Supabase upload failed, falling back to ImgBB:', result.error);
+  }
+  
+  // Fallback ke ImgBB
+  const result = await uploadToImgbb(fileBuffer, fileName);
+  if (result.success) {
+    return { ...result, isFallback: true, storage: 'imgbb' };
+  }
+  
+  return { success: false, error: result.error };
+}
+
+/**
+ * Delete file from storage (Supabase only, ImgBB cannot delete via API)
+ */
+async function deleteFromStorage(fileUrl) {
+  if (!supabase || !fileUrl) return false;
+  
+  try {
+    // Extract path from Supabase URL
+    const supabasePattern = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/`;
+    if (!fileUrl.startsWith(supabasePattern)) {
+      console.log('Not a Supabase URL, skipping delete');
+      return true;
+    }
+    
+    const path = fileUrl.replace(supabasePattern, '');
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove([path]);
+    
+    if (error) throw error;
+    
+    console.log(`✅ Deleted: ${path}`);
+    return true;
+  } catch (error) {
+    console.error('Delete error:', error);
+    return false;
+  }
+}
+
+/**
+ * Send WhatsApp message via Fonnte
+ */
 async function sendWhatsAppMessage(phoneNumber, message) {
-  if (!WHATSAPP_CONFIG.enabled) {
-    console.log('WhatsApp notifications disabled');
+  if (!WHATSAPP_CONFIG.enabled || !WHATSAPP_CONFIG.fonnteApiKey) {
+    console.log('WhatsApp notifications disabled or not configured');
     return { success: false, message: 'WhatsApp disabled' };
   }
   
@@ -184,8 +323,14 @@ async function sendWhatsAppMessage(phoneNumber, message) {
   }
 }
 
-// Call GROQ API (UPDATED)
+/**
+ * Call GROQ API
+ */
 async function callGroqAPI(messages) {
+  if (!GROQ_API_KEY) {
+    return { success: false, error: 'GROQ_API_KEY not configured' };
+  }
+  
   try {
     const response = await axios.post(GROQ_API_URL, {
       model: GROQ_MODEL,
@@ -212,8 +357,14 @@ async function callGroqAPI(messages) {
   }
 }
 
-// Call OpenAI API
+/**
+ * Call OpenAI API
+ */
 async function callOpenAI(messages) {
+  if (!OPENAI_CONFIG.apiKey) {
+    return { success: false, error: 'OPENAI_API_KEY not configured' };
+  }
+  
   try {
     const response = await axios.post(OPENAI_CONFIG.apiUrl, {
       model: OPENAI_CONFIG.model,
@@ -240,38 +391,9 @@ async function callOpenAI(messages) {
   }
 }
 
-// Upload to Supabase Storage
-async function uploadToSupabase(fileBuffer, fileName, folder = 'attendance') {
-  try {
-    const filePath = `${folder}/${Date.now()}_${fileName}`;
-    const { data, error } = await supabase.storage
-      .from(STORAGE_BUCKET)
-      .upload(filePath, fileBuffer, {
-        contentType: 'image/jpeg',
-        cacheControl: '3600'
-      });
-    
-    if (error) throw error;
-    
-    const { data: { publicUrl } } = supabase.storage
-      .from(STORAGE_BUCKET)
-      .getPublicUrl(filePath);
-    
-    return {
-      success: true,
-      url: publicUrl,
-      path: filePath
-    };
-  } catch (error) {
-    console.error('Supabase upload error:', error);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
-}
-
-// Check if user is late (after 08:00 AM)
+/**
+ * Check if user is late (after 08:00 AM)
+ */
 function isLate() {
   const now = new Date();
   const hour = now.getHours();
@@ -279,7 +401,9 @@ function isLate() {
   return (hour > 8) || (hour === 8 && minute > 0);
 }
 
-// Authentication Middleware
+/**
+ * Authentication Middleware
+ */
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -303,7 +427,9 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Admin Middleware
+/**
+ * Admin Middleware
+ */
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({
@@ -342,95 +468,16 @@ app.get('/api/firebase-config', (req, res) => {
   });
 });
 
-// Get Firebase config (for frontend)
-app.get('/api/firebase-config', (req, res) => {
-  res.json({
-    success: true,
-    config: firebaseConfig
-  });
-});
+// ============ AI CHAT ENDPOINTS ============
 
-// Upload image to IMGBB (public)
-app.post('/api/upload', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'No image file provided'
-      });
-    }
-    
-    const result = await uploadToImgbb(req.file.buffer, req.file.originalname);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Image uploaded successfully',
-        data: {
-          url: result.url,
-          thumb: result.thumb,
-          delete_url: result.delete_url
-        }
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: result.error
-      });
-    }
-  } catch (error) {
-    console.error('Upload error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-// Upload to Supabase Storage (public)
-app.post('/api/upload-supabase', upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'No image file provided'
-      });
-    }
-    
-    const folder = req.body.folder || 'public';
-    const result = await uploadToSupabase(req.file.buffer, req.file.originalname, folder);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Image uploaded to Supabase successfully',
-        data: {
-          url: result.url,
-          path: result.path
-        }
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: result.error
-      });
-    }
-  } catch (error) {
-    console.error('Supabase upload error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-// ============ AI CHAT ENDPOINTS (PUBLIC - NO AUTH REQUIRED) ============
-
-// AI Chat via GROQ (Public) - UPDATED WITH NEW API KEY
+/**
+ * AI Chat via GROQ (via backend proxy - AMAN)
+ * Frontend akan memanggil endpoint ini, bukan Groq langsung
+ */
 app.post('/api/ai/groq', async (req, res) => {
-  const { message, history = [] } = req.body;
+  const { message, systemPrompt, history = [], temperature = 0.7, maxTokens = 1024 } = req.body;
   
-  console.log('GROQ Request received:', message);
+  console.log('🤖 GROQ Request received:', message?.substring(0, 100));
   
   if (!message) {
     return res.status(400).json({
@@ -439,8 +486,11 @@ app.post('/api/ai/groq', async (req, res) => {
     });
   }
   
+  // Gunakan system prompt dari frontend atau default
+  const systemContent = systemPrompt || 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif. Berikan jawaban yang lengkap dan bermanfaat.';
+  
   const messages = [
-    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif. Berikan jawaban yang lengkap dan bermanfaat.' },
+    { role: 'system', content: systemContent },
     ...history,
     { role: 'user', content: message }
   ];
@@ -461,11 +511,13 @@ app.post('/api/ai/groq', async (req, res) => {
   }
 });
 
-// AI Chat via OpenAI (Public)
+/**
+ * AI Chat via OpenAI (via backend proxy)
+ */
 app.post('/api/ai/openai', async (req, res) => {
-  const { message, history = [] } = req.body;
+  const { message, systemPrompt, history = [] } = req.body;
   
-  console.log('OpenAI Request received:', message);
+  console.log('🤖 OpenAI Request received:', message?.substring(0, 100));
   
   if (!message) {
     return res.status(400).json({
@@ -474,8 +526,10 @@ app.post('/api/ai/openai', async (req, res) => {
     });
   }
   
+  const systemContent = systemPrompt || 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif.';
+  
   const messages = [
-    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif.' },
+    { role: 'system', content: systemContent },
     ...history,
     { role: 'user', content: message }
   ];
@@ -496,7 +550,91 @@ app.post('/api/ai/openai', async (req, res) => {
   }
 });
 
-// Send WhatsApp message (public - with API key)
+// ============ STORAGE ENDPOINTS (via backend proxy - AMAN) ============
+
+/**
+ * Upload image (main endpoint)
+ * Frontend akan memanggil endpoint ini untuk upload gambar
+ */
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+    
+    const { folder = 'uploads', userId } = req.body;
+    
+    const result = await uploadImage(
+      req.file.buffer,
+      req.file.originalname,
+      folder,
+      userId
+    );
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Image uploaded successfully',
+        data: {
+          url: result.url,
+          path: result.path || null,
+          thumb: result.thumb || null,
+          storage: result.storage || 'supabase',
+          isFallback: result.isFallback || false
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+/**
+ * Delete file from storage (Supabase only)
+ */
+app.post('/api/storage/delete', async (req, res) => {
+  try {
+    const { fileUrl } = req.body;
+    
+    if (!fileUrl) {
+      return res.status(400).json({
+        success: false,
+        error: 'No file URL provided'
+      });
+    }
+    
+    const result = await deleteFromStorage(fileUrl);
+    
+    res.json({
+      success: result,
+      message: result ? 'File deleted successfully' : 'File not found or already deleted'
+    });
+  } catch (error) {
+    console.error('Delete error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// ============ WHATSAPP ENDPOINTS ============
+
+/**
+ * Send WhatsApp message
+ */
 app.post('/api/whatsapp/send', async (req, res) => {
   const { phoneNumber, message } = req.body;
   
@@ -523,7 +661,11 @@ app.post('/api/whatsapp/send', async (req, res) => {
   }
 });
 
-// Register new user
+// ============ AUTH ENDPOINTS ============
+
+/**
+ * Register new user
+ */
 app.post('/api/register', [
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
@@ -575,7 +717,6 @@ app.post('/api/register', [
       { expiresIn: '24h' }
     );
 
-    // Send welcome WhatsApp message if phone number provided
     if (phoneNumber && WHATSAPP_CONFIG.enabled) {
       const welcomeMessage = `Selamat datang ${name} di Aplikasi Absensi!\n\nAnda telah berhasil terdaftar dengan role: ${role}\nEmail: ${email}\n\nTerima kasih telah menggunakan layanan kami.`;
       await sendWhatsAppMessage(phoneNumber, welcomeMessage);
@@ -596,7 +737,9 @@ app.post('/api/register', [
   }
 });
 
-// Login user
+/**
+ * Login user
+ */
 app.post('/api/login', [
   body('email').isEmail().withMessage('Valid email is required').normalizeEmail(),
   body('password').notEmpty().withMessage('Password is required')
@@ -668,7 +811,9 @@ app.post('/api/login', [
 
 // ============ PROTECTED ROUTES (Auth Required) ============
 
-// Upload profile picture
+/**
+ * Upload profile picture
+ */
 app.post('/api/upload-profile', authenticateToken, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
@@ -678,13 +823,18 @@ app.post('/api/upload-profile', authenticateToken, upload.single('image'), async
       });
     }
     
-    const result = await uploadToImgbb(req.file.buffer, `profile_${req.user.userId}_${Date.now()}`);
+    const result = await uploadImage(
+      req.file.buffer,
+      `profile_${req.user.userId}_${Date.now()}`,
+      'profiles',
+      req.user.userId
+    );
     
     if (result.success) {
       const userRef = db.ref(`users/${req.user.userId}`);
       await userRef.update({
         profilePicture: result.url,
-        profilePictureThumb: result.thumb,
+        profilePictureThumb: result.thumb || result.url,
         updatedAt: new Date().toISOString()
       });
       
@@ -693,7 +843,7 @@ app.post('/api/upload-profile', authenticateToken, upload.single('image'), async
         message: 'Profile picture uploaded successfully',
         data: {
           url: result.url,
-          thumb: result.thumb
+          thumb: result.thumb || result.url
         }
       });
     } else {
@@ -711,52 +861,9 @@ app.post('/api/upload-profile', authenticateToken, upload.single('image'), async
   }
 });
 
-// Upload attendance photo (multiple storage options)
-app.post('/api/upload-attendance', authenticateToken, upload.single('image'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        error: 'No image file provided'
-      });
-    }
-    
-    const storageType = req.body.storage || 'imgbb';
-    let result;
-    
-    if (storageType === 'supabase') {
-      result = await uploadToSupabase(req.file.buffer, `attendance_${req.user.userId}_${Date.now()}`, 'attendance');
-    } else {
-      result = await uploadToImgbb(req.file.buffer, `attendance_${req.user.userId}_${Date.now()}`);
-    }
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        message: 'Photo uploaded successfully',
-        storage: storageType,
-        data: {
-          url: result.url,
-          ...(result.thumb && { thumb: result.thumb }),
-          ...(result.path && { path: result.path })
-        }
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: result.error
-      });
-    }
-  } catch (error) {
-    console.error('Upload attendance error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-// Get user profile
+/**
+ * Get user profile
+ */
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const snapshot = await db.ref(`users/${req.user.userId}`).once('value');
@@ -783,7 +890,9 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Update user profile
+/**
+ * Update user profile
+ */
 app.put('/api/profile', authenticateToken, [
   body('name').optional().trim().notEmpty().withMessage('Name cannot be empty'),
   body('email').optional().isEmail().withMessage('Valid email is required'),
@@ -827,7 +936,9 @@ app.put('/api/profile', authenticateToken, [
   }
 });
 
-// Check-in / Check-out with photo and WhatsApp notification
+/**
+ * Check-in / Check-out
+ */
 app.post('/api/attendance', authenticateToken, [
   body('type').isIn(['check_in', 'check_out']).withMessage('Type must be check_in or check_out'),
   body('location').optional().isString(),
@@ -943,7 +1054,9 @@ app.post('/api/attendance', authenticateToken, [
   }
 });
 
-// Get attendance history
+/**
+ * Get attendance history
+ */
 app.get('/api/attendance', authenticateToken, async (req, res) => {
   const { userId } = req.user;
   const { startDate, endDate, limit = 50 } = req.query;
@@ -986,7 +1099,9 @@ app.get('/api/attendance', authenticateToken, async (req, res) => {
   }
 });
 
-// Get today's attendance
+/**
+ * Get today's attendance
+ */
 app.get('/api/attendance/today', authenticateToken, async (req, res) => {
   try {
     const today = new Date().toISOString().split('T')[0];
@@ -1014,7 +1129,9 @@ app.get('/api/attendance/today', authenticateToken, async (req, res) => {
   }
 });
 
-// AI Summary for user (protected)
+/**
+ * AI Summary for user (protected)
+ */
 app.post('/api/ai/summary', authenticateToken, async (req, res) => {
   const { startDate, endDate } = req.body;
   const { userId, name } = req.user;
@@ -1078,7 +1195,9 @@ Buatkan dalam bahasa Indonesia yang profesional dan berikan saran perbaikan jika
 
 // ============ ADMIN ONLY ROUTES ============
 
-// Get all users
+/**
+ * Get all users
+ */
 app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const snapshot = await db.ref('users').once('value');
@@ -1104,7 +1223,9 @@ app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
   }
 });
 
-// Delete user
+/**
+ * Delete user
+ */
 app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
   const { userId } = req.params;
 
@@ -1123,7 +1244,9 @@ app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, re
   }
 });
 
-// Get attendance by date
+/**
+ * Get attendance by date
+ */
 app.get('/api/attendance/date/:date', authenticateToken, requireAdmin, async (req, res) => {
   const { date } = req.params;
 
@@ -1150,7 +1273,9 @@ app.get('/api/attendance/date/:date', authenticateToken, requireAdmin, async (re
   }
 });
 
-// Get summary statistics
+/**
+ * Get summary statistics
+ */
 app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const usersSnapshot = await db.ref('users').once('value');
@@ -1195,7 +1320,9 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
   }
 });
 
-// Send broadcast WhatsApp message (admin only)
+/**
+ * Send broadcast WhatsApp message (admin only)
+ */
 app.post('/api/whatsapp/broadcast', authenticateToken, requireAdmin, async (req, res) => {
   const { message } = req.body;
   
@@ -1241,7 +1368,9 @@ app.post('/api/whatsapp/broadcast', authenticateToken, requireAdmin, async (req,
   }
 });
 
-// Get system logs (admin only)
+/**
+ * Get system logs (admin only)
+ */
 app.get('/api/admin/logs', authenticateToken, requireAdmin, async (req, res) => {
   try {
     const logsRef = db.ref('system_logs');
@@ -1287,14 +1416,22 @@ app.use((err, req, res, next) => {
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔥 Firebase Database: ${process.env.FIREBASE_DATABASE_URL}`);
-  console.log(`📸 IMGBB API Key: ${IMGBB_KEY ? 'Configured' : 'Missing'}`);
-  console.log(`🤖 GROQ API: ${GROQ_API_KEY ? 'Configured' : 'Missing'}`);
-  console.log(`🤖 OpenAI API: ${OPENAI_CONFIG.apiKey ? 'Configured' : 'Missing'}`);
-  console.log(`💬 WhatsApp (Fonnte): ${WHATSAPP_CONFIG.enabled ? 'Enabled' : 'Disabled'}`);
-  console.log(`🗄️ Supabase: ${SUPABASE_URL ? 'Configured' : 'Missing'}`);
+  console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║     🚀 BACKEND SERVER STARTED SUCCESSFULLY                  ║
+╠══════════════════════════════════════════════════════════════╣
+║  Port: ${PORT}                                                  ║
+║  Environment: ${process.env.NODE_ENV || 'development'}                              ║
+╠══════════════════════════════════════════════════════════════╣
+║  Services:                                                  ║
+║  🔥 Firebase: ${admin.apps.length > 0 ? '✅ Connected' : '❌ Failed'}                                        ║
+║  🤖 GROQ API: ${GROQ_API_KEY ? '✅ Configured' : '❌ Missing'}                                        ║
+║  🤖 OpenAI API: ${OPENAI_CONFIG.apiKey ? '✅ Configured' : '❌ Missing'}                                      ║
+║  📸 IMGBB: ${IMGBB_KEY ? '✅ Configured' : '❌ Missing'}                                          ║
+║  💬 WhatsApp: ${WHATSAPP_CONFIG.enabled ? '✅ Enabled' : '❌ Disabled'}                                       ║
+║  🗄️ Supabase: ${SUPABASE_URL ? '✅ Configured' : '❌ Missing'}                                        ║
+╚══════════════════════════════════════════════════════════════╝
+  `);
 });
 
 module.exports = app;
