@@ -342,6 +342,14 @@ app.get('/api/firebase-config', (req, res) => {
   });
 });
 
+// Get Firebase config (for frontend)
+app.get('/api/firebase-config', (req, res) => {
+  res.json({
+    success: true,
+    config: firebaseConfig
+  });
+});
+
 // Upload image to IMGBB (public)
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
