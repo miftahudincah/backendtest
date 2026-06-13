@@ -1,6 +1,7 @@
-// index.js - VERSION 4.1 (VERCEL OPTIMIZED - FIXED)
+// index.js - VERSION 4.2 (FIXED IMGBB DIRECT URL)
 // Backend untuk Sistem Absensi IoT
 // Semua API Key disimpan di environment variables (AMAN)
+// PERBAIKAN: Mengembalikan direct image URL dari ImgBB, bukan halaman preview
 // ============================================================================
 
 const express = require('express');
@@ -37,13 +38,11 @@ const optionalEnvVars = [
   'STORAGE_BUCKET'
 ];
 
-// Untuk production di Vercel, jangan exit process (tidak bisa)
 const isVercel = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
 
 requiredEnvVars.forEach(varName => {
   if (!process.env[varName]) {
-    const error = `❌ Missing required environment variable: ${varName}`;
-    console.error(error);
+    console.error(`❌ Missing required environment variable: ${varName}`);
     if (!isVercel) process.exit(1);
   }
 });
@@ -56,7 +55,6 @@ optionalEnvVars.forEach(varName => {
 
 // ============ KONFIGURASI ============
 
-// Firebase Config (for frontend reference)
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY || "AIzaSyBZg9NpbBAg8dKHkCbYf4J_2bpHH2ZJWWI",
   authDomain: process.env.FIREBASE_AUTH_DOMAIN || "absensi-4389a-default-rtdb.firebaseapp.com",
@@ -67,12 +65,10 @@ const firebaseConfig = {
   appId: process.env.FIREBASE_APP_ID || "1:123456789:web:abcdef"
 };
 
-// GROQ API Configuration
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
-// OpenAI Configuration
 const OPENAI_CONFIG = {
     apiKey: process.env.OPENAI_API_KEY,
     model: 'gpt-4o-mini',
@@ -81,10 +77,8 @@ const OPENAI_CONFIG = {
     apiUrl: 'https://api.openai.com/v1/chat/completions'
 };
 
-// IMGBB Configuration
 const IMGBB_KEY = process.env.IMGBB_KEY;
 
-// WhatsApp Configuration (Fonnte)
 const WHATSAPP_CONFIG = {
     gateway: 'fonnte',
     fonnteApiKey: process.env.FONNTE_API_KEY,
@@ -96,12 +90,10 @@ const WHATSAPP_CONFIG = {
     senderNumber: ''
 };
 
-// Supabase Configuration
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
 
-// Initialize Supabase client
 let supabase = null;
 if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -110,16 +102,15 @@ if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
   console.warn('⚠️ Supabase not configured, using ImgBB only');
 }
 
-// Konfigurasi Multer untuk Vercel
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max
+    fileSize: 10 * 1024 * 1024,
     fieldSize: 10 * 1024 * 1024
   }
 });
 
-// Firebase Admin SDK Configuration
+// Firebase Admin SDK
 const serviceAccount = {
   type: process.env.FIREBASE_TYPE || "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
@@ -133,7 +124,6 @@ const serviceAccount = {
   client_x509_cert_url: process.env.FIREBASE_CLIENT_CERT_URL
 };
 
-// Initialize Firebase Admin
 if (!admin.apps.length) {
   try {
     admin.initializeApp({
@@ -152,7 +142,6 @@ const app = express();
 
 // ============ MIDDLEWARE ============
 
-// CORS - allow all origins
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -160,11 +149,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Body parser
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging (hanya di development)
 if (!isVercel) {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -175,7 +162,7 @@ if (!isVercel) {
 // ============ HELPER FUNCTIONS ============
 
 /**
- * Upload image to IMGBB (fallback)
+ * Upload image to IMGBB (fallback) - FIXED: return direct image URL
  */
 async function uploadToImgbb(fileBuffer, fileName) {
   if (!IMGBB_KEY) {
@@ -192,11 +179,26 @@ async function uploadToImgbb(fileBuffer, fileName) {
       timeout: 30000
     });
     
+    // ============ PERBAIKAN: Ambil direct image URL ============
+    // response.data.data.image.url adalah direct URL ke file gambar
+    // response.data.data.url adalah halaman preview (tidak bisa langsung ditampilkan)
+    const directUrl = response.data.data.image?.url || response.data.data.url;
+    const displayUrl = response.data.data.url;
+    const thumbUrl = response.data.data.thumb?.url || directUrl;
+    
+    console.log(`📸 ImgBB upload success - Direct URL: ${directUrl}`);
+    
     return {
       success: true,
-      url: response.data.data.url,
-      thumb: response.data.data.thumb,
-      delete_url: response.data.data.delete_url
+      url: directUrl,           // Direct image URL (bisa langsung ditampilkan)
+      display_url: displayUrl,  // Halaman preview ImgBB
+      thumb: thumbUrl,          // Thumbnail URL
+      delete_url: response.data.data.delete_url,
+      filename: response.data.data.image?.filename || fileName,
+      size: response.data.data.size,
+      width: response.data.data.width,
+      height: response.data.data.height,
+      storage: 'imgbb'
     };
   } catch (error) {
     console.error('IMGBB upload error:', error.message);
@@ -248,7 +250,8 @@ async function uploadToSupabaseStorage(fileBuffer, fileName, folder = 'uploads',
       success: true,
       url: publicUrl,
       path: fullPath,
-      storage: 'supabase'
+      storage: 'supabase',
+      isFallback: false
     };
   } catch (error) {
     console.error('Supabase upload error:', error.message);
@@ -272,7 +275,7 @@ async function uploadImage(fileBuffer, fileName, folder = 'uploads', userId = nu
   // Fallback to ImgBB
   const result = await uploadToImgbb(fileBuffer, fileName);
   if (result.success) {
-    return { ...result, isFallback: true, storage: 'imgbb' };
+    return { ...result, isFallback: true };
   }
   
   return { success: false, error: result.error || 'All upload methods failed' };
@@ -418,7 +421,6 @@ const requireAdmin = (req, res, next) => {
 
 // ============ PUBLIC ROUTES ============
 
-// Health check
 app.get('/api/health', (req, res) => {
   res.json({
     success: true,
@@ -436,7 +438,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Get Firebase config
 app.get('/api/firebase-config', (req, res) => {
   res.json({ success: true, config: firebaseConfig });
 });
@@ -444,7 +445,7 @@ app.get('/api/firebase-config', (req, res) => {
 // ============ STORAGE ENDPOINTS ============
 
 /**
- * Upload image endpoint
+ * Upload image endpoint - FIXED: returns direct image URL
  */
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
@@ -470,14 +471,20 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     const result = await uploadImage(req.file.buffer, req.file.originalname, folder, userId);
     
     if (result.success) {
+      // Response dengan URL gambar yang bisa langsung ditampilkan
       res.json({
         success: true,
         message: 'Image uploaded successfully',
         data: {
-          url: result.url,
+          url: result.url,                    // Direct image URL (bisa langsung dipakai)
+          display_url: result.display_url,    // Halaman preview (opsional)
+          thumb: result.thumb || result.url,  // Thumbnail URL
           path: result.path || null,
-          thumb: result.thumb || null,
-          storage: result.storage || 'supabase',
+          filename: result.filename || req.file.originalname,
+          size: result.size || req.file.size,
+          width: result.width || null,
+          height: result.height || null,
+          storage: result.storage || 'imgbb',
           isFallback: result.isFallback || false
         }
       });
@@ -501,9 +508,8 @@ app.post('/api/storage/delete', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No file URL provided' });
     }
     
-    // ImgBB files cannot be deleted
     if (fileUrl.includes('imgbb.com') || fileUrl.includes('ibb.co')) {
-      return res.json({ success: true, message: 'ImgBB files cannot be deleted via API' });
+      return res.json({ success: true, message: 'ImgBB files cannot be deleted via API (auto-expire after 30 days)' });
     }
     
     const result = await deleteFromStorage(fileUrl);
@@ -830,12 +836,10 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
 
 // ============ ERROR HANDLING ============
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ success: false, error: `Route not found: ${req.method} ${req.path}` });
 });
 
-// Global error handler
 app.use((err, req, res, next) => {
   console.error('Global error:', err.stack);
   res.status(500).json({ success: false, error: err.message || 'Internal server error' });
@@ -844,7 +848,6 @@ app.use((err, req, res, next) => {
 // ============ EXPORT FOR VERCEL ============
 module.exports = app;
 
-// Start server jika dijalankan langsung (bukan di Vercel)
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
@@ -856,7 +859,7 @@ if (require.main === module) {
 ║  Environment: ${process.env.NODE_ENV || 'development'}                              ║
 ╠══════════════════════════════════════════════════════════════╣
 ║  Services:                                                  ║
-║  🔥 Firebase: ${admin.apps.length > 0 ? '✅ Connected' : '❌ Failed'}                                        ║
+║  🔥 Firebase: ${admin.apps.length > 0 ? '✅' : '❌'}                                                    ║
 ║  🤖 GROQ API: ${GROQ_API_KEY ? '✅' : '❌'}                                                   ║
 ║  🤖 OpenAI API: ${OPENAI_CONFIG.apiKey ? '✅' : '❌'}                                                 ║
 ║  📸 IMGBB: ${IMGBB_KEY ? '✅' : '❌'}                                                       ║
