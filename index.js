@@ -26,8 +26,8 @@ const firebaseConfig = {
   appId: "1:123456789:web:abcdef"
 };
 
-// GROQ API Configuration
-const GROQ_API_KEY = "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";
+// GROQ API Configuration (UPDATED WITH NEW API KEY)
+const GROQ_API_KEY = "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";
 const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const GROQ_MODEL = "llama-3.3-70b-versatile";
 
@@ -184,7 +184,7 @@ async function sendWhatsAppMessage(phoneNumber, message) {
   }
 }
 
-// Call GROQ API
+// Call GROQ API (UPDATED)
 async function callGroqAPI(messages) {
   try {
     const response = await axios.post(GROQ_API_URL, {
@@ -418,7 +418,7 @@ app.post('/api/upload-supabase', upload.single('image'), async (req, res) => {
 
 // ============ AI CHAT ENDPOINTS (PUBLIC - NO AUTH REQUIRED) ============
 
-// AI Chat via GROQ (Public)
+// AI Chat via GROQ (Public) - UPDATED WITH NEW API KEY
 app.post('/api/ai/groq', async (req, res) => {
   const { message, history = [] } = req.body;
   
@@ -432,7 +432,7 @@ app.post('/api/ai/groq', async (req, res) => {
   }
   
   const messages = [
-    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif.' },
+    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif. Berikan jawaban yang lengkap dan bermanfaat.' },
     ...history,
     { role: 'user', content: message }
   ];
