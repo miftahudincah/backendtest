@@ -5,6 +5,9 @@ const admin = require('firebase-admin');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
+const multer = require('multer');
+const axios = require('axios');
+const FormData = require('form-data');
 
 // Load environment variables
 dotenv.config();
@@ -24,6 +27,10 @@ requiredEnvVars.forEach(varName => {
     process.exit(1);
   }
 });
+
+// IMGBB Configuration
+const IMGBB_KEY = "67650d8ee67ebb8bba94f3bb2c72eb4f";
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Firebase Admin SDK Configuration
 const serviceAccount = {
@@ -108,6 +115,34 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// Helper function to upload image to IMGBB
+async function uploadToImgbb(fileBuffer, fileName) {
+  try {
+    const formData = new FormData();
+    formData.append('image', fileBuffer.toString('base64'));
+    formData.append('name', fileName);
+    
+    const response = await axios.post(`https://api.imgbb.com/1/upload?key=${IMGBB_KEY}`, formData, {
+      headers: {
+        ...formData.getHeaders()
+      }
+    });
+    
+    return {
+      success: true,
+      url: response.data.data.url,
+      thumb: response.data.data.thumb,
+      delete_url: response.data.data.delete_url
+    };
+  } catch (error) {
+    console.error('IMGBB upload error:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 // ============ PUBLIC ROUTES ============
 
 // Health check
@@ -119,6 +154,43 @@ app.get('/api/health', (req, res) => {
     database: admin.apps.length > 0 ? 'connected' : 'disconnected',
     environment: process.env.NODE_ENV || 'development'
   });
+});
+
+// Upload image (public - for testing)
+app.post('/api/upload', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+    
+    const result = await uploadToImgbb(req.file.buffer, req.file.originalname);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Image uploaded successfully',
+        data: {
+          url: result.url,
+          thumb: result.thumb,
+          delete_url: result.delete_url
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Upload error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
 });
 
 // Register new user
@@ -256,6 +328,88 @@ app.post('/api/login', [
 
 // ============ PROTECTED ROUTES ============
 
+// Upload profile picture
+app.post('/api/upload-profile', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+    
+    // Upload to IMGBB
+    const result = await uploadToImgbb(req.file.buffer, `profile_${req.user.userId}_${Date.now()}`);
+    
+    if (result.success) {
+      // Save image URL to user profile
+      const userRef = db.ref(`users/${req.user.userId}`);
+      await userRef.update({
+        profilePicture: result.url,
+        profilePictureThumb: result.thumb,
+        updatedAt: new Date().toISOString()
+      });
+      
+      res.json({
+        success: true,
+        message: 'Profile picture uploaded successfully',
+        data: {
+          url: result.url,
+          thumb: result.thumb
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Upload profile error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Upload attendance photo
+app.post('/api/upload-attendance', authenticateToken, upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: 'No image file provided'
+      });
+    }
+    
+    const result = await uploadToImgbb(req.file.buffer, `attendance_${req.user.userId}_${Date.now()}`);
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: 'Photo uploaded successfully',
+        data: {
+          url: result.url,
+          thumb: result.thumb,
+          delete_url: result.delete_url
+        }
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error
+      });
+    }
+  } catch (error) {
+    console.error('Upload attendance error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
 // Get user profile
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
@@ -325,13 +479,14 @@ app.put('/api/profile', authenticateToken, [
   }
 });
 
-// Check-in / Check-out
+// Check-in / Check-out with photo
 app.post('/api/attendance', authenticateToken, [
   body('type').isIn(['check_in', 'check_out']).withMessage('Type must be check_in or check_out'),
   body('location').optional().isString(),
   body('notes').optional().isString(),
   body('latitude').optional().isFloat({ min: -90, max: 90 }),
-  body('longitude').optional().isFloat({ min: -180, max: 180 })
+  body('longitude').optional().isFloat({ min: -180, max: 180 }),
+  body('photoUrl').optional().isString()
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -341,7 +496,7 @@ app.post('/api/attendance', authenticateToken, [
     });
   }
 
-  const { type, location, notes, latitude, longitude } = req.body;
+  const { type, location, notes, latitude, longitude, photoUrl } = req.body;
   const { userId, name } = req.user;
 
   try {
@@ -363,6 +518,7 @@ app.post('/api/attendance', authenticateToken, [
         checkInNotes: notes || null,
         checkInLatitude: latitude || null,
         checkInLongitude: longitude || null,
+        checkInPhoto: photoUrl || null,
         userId,
         userName: name,
         date: today,
@@ -377,6 +533,7 @@ app.post('/api/attendance', authenticateToken, [
         data: checkInData
       });
     } else {
+      // Check-out
       if (!snapshot.exists() || !snapshot.val().checkIn) {
         return res.status(400).json({
           success: false,
@@ -397,7 +554,8 @@ app.post('/api/attendance', authenticateToken, [
         checkOutLocation: location || null,
         checkOutNotes: notes || null,
         checkOutLatitude: latitude || null,
-        checkOutLongitude: longitude || null
+        checkOutLongitude: longitude || null,
+        checkOutPhoto: photoUrl || null
       };
 
       await attendanceRef.set(checkOutData);
@@ -626,6 +784,7 @@ app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔥 Firebase Database: ${process.env.FIREBASE_DATABASE_URL}`);
+  console.log(`📸 IMGBB API Key: ${IMGBB_KEY ? 'Configured' : 'Missing'}`);
 });
 
 module.exports = app;
