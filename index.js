@@ -1,12 +1,10 @@
-// index.js - VERSION 3.2 (BACKEND PROXY COMPLETE)
+// index.js - VERSION 4.0 (VERCEL OPTIMIZED)
 // Backend untuk Sistem Absensi IoT
 // Semua API Key disimpan di environment variables (AMAN)
-// Mendukung: 
-// - Groq AI Chat
-// - Storage (Supabase + ImgBB fallback)
-// - WhatsApp Gateway (Fonnte)
-// - Firebase Admin SDK
-// - Upload & delete file via backend proxy
+// OPTIMASI UNTUK VERCEL:
+// - Konfigurasi Multer yang tepat untuk serverless
+// - Body parser yang benar untuk upload file
+// - Error handling yang robust
 // ============================================================================
 
 const express = require('express');
@@ -39,7 +37,8 @@ const optionalEnvVars = [
   'IMGBB_KEY',
   'FONNTE_API_KEY',
   'SUPABASE_URL',
-  'SUPABASE_ANON_KEY'
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'STORAGE_BUCKET'
 ];
 
 requiredEnvVars.forEach(varName => {
@@ -99,26 +98,33 @@ const WHATSAPP_CONFIG = {
 
 // Supabase Configuration
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
 
-// Initialize Supabase client (jika dikonfigurasi)
+// Initialize Supabase client dengan SERVICE ROLE KEY (untuk upload)
 let supabase = null;
-if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-  console.log('✅ Supabase client initialized');
+if (SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY) {
+  supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  console.log('✅ Supabase client initialized with service role key');
 } else {
   console.warn('⚠️ Supabase not configured, using ImgBB only');
 }
 
-const upload = multer({ storage: multer.memoryStorage() });
+// Konfigurasi Multer untuk Vercel (memory storage, bukan disk)
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB max
+    fieldSize: 5 * 1024 * 1024
+  }
+});
 
 // Firebase Admin SDK Configuration
 const serviceAccount = {
   type: process.env.FIREBASE_TYPE || "service_account",
   project_id: process.env.FIREBASE_PROJECT_ID,
   private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-  private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  private_key: process.env.FIREBASE_PRIVATE_KEY ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') : '',
   client_email: process.env.FIREBASE_CLIENT_EMAIL,
   client_id: process.env.FIREBASE_CLIENT_ID,
   auth_uri: process.env.FIREBASE_AUTH_URI || "https://accounts.google.com/o/oauth2/auth",
@@ -144,7 +150,9 @@ if (!admin.apps.length) {
 const db = admin.database();
 const app = express();
 
-// Middleware
+// ============ MIDDLEWARE (Urutan Penting untuk Vercel) ============
+
+// CORS - allow all origins for testing
 app.use(cors({
   origin: '*',
   credentials: true,
@@ -152,8 +160,9 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Body parser untuk JSON dan URL encoded (TAPI jangan untuk multipart)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Request logging middleware
 app.use((req, res, next) => {
@@ -179,7 +188,8 @@ async function uploadToImgbb(fileBuffer, fileName) {
     const response = await axios.post(`https://api.imgbb.com/1/upload?key=${IMGBB_KEY}`, formData, {
       headers: {
         ...formData.getHeaders()
-      }
+      },
+      timeout: 30000
     });
     
     return {
@@ -189,7 +199,7 @@ async function uploadToImgbb(fileBuffer, fileName) {
       delete_url: response.data.data.delete_url
     };
   } catch (error) {
-    console.error('IMGBB upload error:', error);
+    console.error('IMGBB upload error:', error.message);
     return {
       success: false,
       error: error.message
@@ -206,22 +216,30 @@ async function uploadToSupabaseStorage(fileBuffer, fileName, folder = 'uploads',
   }
   
   try {
-    let fullPath;
-    const ext = fileName.split('.').pop();
+    // Tentukan ekstensi file
+    const originalExt = fileName.split('.').pop().toLowerCase();
+    const ext = ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(originalExt) ? originalExt : 'jpg';
     const timestamp = Date.now();
     const randomStr = Math.random().toString(36).substring(2, 8);
     
-    if (userId && userId !== 'null' && userId !== 'undefined') {
+    let fullPath;
+    if (userId && userId !== 'null' && userId !== 'undefined' && userId !== '') {
       fullPath = `${folder}/${userId}/${timestamp}_${randomStr}.${ext}`;
     } else {
       fullPath = `${folder}/${timestamp}_${randomStr}.${ext}`;
     }
     
+    // Deteksi MIME type
+    let contentType = 'image/jpeg';
+    if (ext === 'png') contentType = 'image/png';
+    if (ext === 'gif') contentType = 'image/gif';
+    if (ext === 'webp') contentType = 'image/webp';
+    
     const { data, error } = await supabase.storage
       .from(STORAGE_BUCKET)
       .upload(fullPath, fileBuffer, {
         cacheControl: '3600',
-        contentType: 'image/jpeg',
+        contentType: contentType,
         upsert: false
       });
     
@@ -238,7 +256,7 @@ async function uploadToSupabaseStorage(fileBuffer, fileName, folder = 'uploads',
       storage: 'supabase'
     };
   } catch (error) {
-    console.error('Supabase upload error:', error);
+    console.error('Supabase upload error:', error.message);
     return {
       success: false,
       error: error.message
@@ -265,11 +283,11 @@ async function uploadImage(fileBuffer, fileName, folder = 'uploads', userId = nu
     return { ...result, isFallback: true, storage: 'imgbb' };
   }
   
-  return { success: false, error: result.error };
+  return { success: false, error: result.error || 'All upload methods failed' };
 }
 
 /**
- * Delete file from storage (Supabase only, ImgBB cannot delete via API)
+ * Delete file from storage (Supabase only)
  */
 async function deleteFromStorage(fileUrl) {
   if (!supabase || !fileUrl) return false;
@@ -292,7 +310,7 @@ async function deleteFromStorage(fileUrl) {
     console.log(`✅ Deleted: ${path}`);
     return true;
   } catch (error) {
-    console.error('Delete error:', error);
+    console.error('Delete error:', error.message);
     return false;
   }
 }
@@ -314,12 +332,13 @@ async function sendWhatsAppMessage(phoneNumber, message) {
     }, {
       headers: {
         'Authorization': WHATSAPP_CONFIG.fonnteApiKey
-      }
+      },
+      timeout: 30000
     });
     
     return { success: true, data: response.data };
   } catch (error) {
-    console.error('WhatsApp error:', error);
+    console.error('WhatsApp error:', error.message);
     return { success: false, error: error.message };
   }
 }
@@ -342,7 +361,8 @@ async function callGroqAPI(messages) {
       headers: {
         'Authorization': `Bearer ${GROQ_API_KEY}`,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 60000
     });
     
     return {
@@ -376,7 +396,8 @@ async function callOpenAI(messages) {
       headers: {
         'Authorization': `Bearer ${OPENAI_CONFIG.apiKey}`,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 60000
     });
     
     return {
@@ -390,16 +411,6 @@ async function callOpenAI(messages) {
       error: error.response?.data?.error?.message || error.message
     };
   }
-}
-
-/**
- * Check if user is late (after 08:00 AM)
- */
-function isLate() {
-  const now = new Date();
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  return (hour > 8) || (hour === 8 && minute > 0);
 }
 
 /**
@@ -473,21 +484,31 @@ app.get('/api/firebase-config', (req, res) => {
 
 /**
  * Upload image (main endpoint)
- * Frontend akan memanggil endpoint ini untuk upload gambar
+ * Menerima multipart/form-data dengan field 'image'
  * Mendukung parameter: folder, userId, bucket
  */
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
+    // Validasi file
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        error: 'No image file provided'
+        error: 'No image file provided. Please upload a file with field name "image".'
+      });
+    }
+    
+    // Validasi tipe file
+    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowedMimes.includes(req.file.mimetype)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid file type. Only JPG, PNG, GIF, and WEBP are allowed.'
       });
     }
     
     const { folder = 'uploads', userId, bucket = STORAGE_BUCKET } = req.body;
     
-    console.log(`📤 Upload request: folder=${folder}, userId=${userId}, file=${req.file.originalname}`);
+    console.log(`📤 Upload request: folder=${folder}, userId=${userId || 'none'}, file=${req.file.originalname}, size=${req.file.size} bytes`);
     
     const result = await uploadImage(
       req.file.buffer,
@@ -511,14 +532,14 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     } else {
       res.status(500).json({
         success: false,
-        error: result.error
+        error: result.error || 'Upload failed'
       });
     }
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({
       success: false,
-      error: 'Internal server error'
+      error: error.message || 'Internal server error'
     });
   }
 });
@@ -560,10 +581,10 @@ app.post('/api/storage/delete', async (req, res) => {
   }
 });
 
-// ============ AI CHAT ENDPOINTS (PUBLIC - NO AUTH REQUIRED) ============
+// ============ AI CHAT ENDPOINTS ============
 
 /**
- * AI Chat via GROQ (via backend proxy - AMAN)
+ * AI Chat via GROQ
  */
 app.post('/api/ai/groq', async (req, res) => {
   const { message, systemPrompt, history = [], temperature = 0.7, maxTokens = 1024 } = req.body;
@@ -577,7 +598,6 @@ app.post('/api/ai/groq', async (req, res) => {
     });
   }
   
-  // Gunakan system prompt dari frontend atau default
   const systemContent = systemPrompt || 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif. Berikan jawaban yang lengkap dan bermanfaat.';
   
   const messages = [
@@ -603,7 +623,7 @@ app.post('/api/ai/groq', async (req, res) => {
 });
 
 /**
- * AI Chat via OpenAI (via backend proxy)
+ * AI Chat via OpenAI
  */
 app.post('/api/ai/openai', async (req, res) => {
   const { message, systemPrompt, history = [] } = req.body;
@@ -667,7 +687,7 @@ app.post('/api/whatsapp/send', async (req, res) => {
   } else {
     res.status(500).json({
       success: false,
-      error: result.error
+      error: result.error || 'Failed to send WhatsApp message'
     });
   }
 });
@@ -836,7 +856,7 @@ app.post('/api/upload-profile', authenticateToken, upload.single('image'), async
     
     const result = await uploadImage(
       req.file.buffer,
-      `profile_${req.user.userId}_${Date.now()}`,
+      `profile_${req.user.userId}_${Date.now()}.jpg`,
       'profiles',
       req.user.userId
     );
@@ -947,263 +967,6 @@ app.put('/api/profile', authenticateToken, [
   }
 });
 
-/**
- * Check-in / Check-out with photo and WhatsApp notification
- */
-app.post('/api/attendance', authenticateToken, [
-  body('type').isIn(['check_in', 'check_out']).withMessage('Type must be check_in or check_out'),
-  body('location').optional().isString(),
-  body('notes').optional().isString(),
-  body('latitude').optional().isFloat({ min: -90, max: 90 }),
-  body('longitude').optional().isFloat({ min: -180, max: 180 }),
-  body('photoUrl').optional().isString()
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({
-      success: false,
-      errors: errors.array()
-    });
-  }
-
-  const { type, location, notes, latitude, longitude, photoUrl } = req.body;
-  const { userId, name } = req.user;
-
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const attendanceRef = db.ref(`attendance/${today}/${userId}`);
-    const snapshot = await attendanceRef.once('value');
-    
-    const userSnapshot = await db.ref(`users/${userId}`).once('value');
-    const userData = userSnapshot.val();
-    const late = isLate();
-
-    if (type === 'check_in') {
-      if (snapshot.exists() && snapshot.val().checkIn) {
-        return res.status(400).json({
-          success: false,
-          error: 'Already checked in today'
-        });
-      }
-
-      const checkInData = {
-        checkIn: new Date().toISOString(),
-        checkInLocation: location || null,
-        checkInNotes: notes || null,
-        checkInLatitude: latitude || null,
-        checkInLongitude: longitude || null,
-        checkInPhoto: photoUrl || null,
-        userId,
-        userName: name,
-        date: today,
-        status: late ? 'late' : 'present',
-        isLate: late
-      };
-
-      await attendanceRef.set(checkInData);
-
-      if (WHATSAPP_CONFIG.sendOnCheckIn && userData?.phoneNumber) {
-        const statusText = late ? '⚠️ TERLAMBAT' : '✅ TEPAT WAKTU';
-        const message = `📋 *NOTIFIKASI ABSENSI*\n\nHalo ${name},\n\nAnda telah melakukan Check-in pada:\n📅 Tanggal: ${today}\n🕐 Waktu: ${new Date().toLocaleTimeString()}\n📍 Lokasi: ${location || 'Tidak tersedia'}\n📝 Status: ${statusText}\n\n${late ? 'Harap lebih baik lagi kedepannya!' : 'Terima kasih sudah tepat waktu!'}`;
-        await sendWhatsAppMessage(userData.phoneNumber, message);
-      }
-
-      res.json({
-        success: true,
-        message: 'Check-in successful',
-        data: checkInData,
-        isLate: late
-      });
-    } else {
-      if (!snapshot.exists() || !snapshot.val().checkIn) {
-        return res.status(400).json({
-          success: false,
-          error: 'Must check-in first'
-        });
-      }
-
-      if (snapshot.val().checkOut) {
-        return res.status(400).json({
-          success: false,
-          error: 'Already checked out today'
-        });
-      }
-
-      const checkOutData = {
-        ...snapshot.val(),
-        checkOut: new Date().toISOString(),
-        checkOutLocation: location || null,
-        checkOutNotes: notes || null,
-        checkOutLatitude: latitude || null,
-        checkOutLongitude: longitude || null,
-        checkOutPhoto: photoUrl || null
-      };
-
-      await attendanceRef.set(checkOutData);
-
-      if (WHATSAPP_CONFIG.sendOnCheckOut && userData?.phoneNumber) {
-        const checkInTime = new Date(snapshot.val().checkIn);
-        const checkOutTime = new Date();
-        const duration = Math.round((checkOutTime - checkInTime) / (1000 * 60));
-        
-        const message = `📋 *NOTIFIKASI ABSENSI*\n\nHalo ${name},\n\nAnda telah melakukan Check-out pada:\n📅 Tanggal: ${today}\n🕐 Waktu: ${checkOutTime.toLocaleTimeString()}\n📍 Lokasi: ${location || 'Tidak tersedia'}\n⏱️ Durasi: ${duration} menit\n\nTerima kasih, hati-hati di jalan!`;
-        await sendWhatsAppMessage(userData.phoneNumber, message);
-      }
-
-      res.json({
-        success: true,
-        message: 'Check-out successful',
-        data: checkOutData
-      });
-    }
-  } catch (error) {
-    console.error('Attendance error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * Get attendance history
- */
-app.get('/api/attendance', authenticateToken, async (req, res) => {
-  const { userId } = req.user;
-  const { startDate, endDate, limit = 50 } = req.query;
-
-  try {
-    const attendanceRef = db.ref('attendance');
-    const snapshot = await attendanceRef.once('value');
-    const attendance = [];
-
-    snapshot.forEach((dateSnapshot) => {
-      const date = dateSnapshot.key;
-
-      if (startDate && date < startDate) return;
-      if (endDate && date > endDate) return;
-
-      dateSnapshot.forEach((userSnapshot) => {
-        const data = userSnapshot.val();
-        if (req.user.role === 'admin' || data.userId === userId) {
-          attendance.push({
-            date,
-            ...data
-          });
-        }
-      });
-    });
-
-    attendance.sort((a, b) => b.date.localeCompare(a.date));
-
-    res.json({
-      success: true,
-      attendance: attendance.slice(0, parseInt(limit)),
-      total: attendance.length
-    });
-  } catch (error) {
-    console.error('Get attendance error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * Get today's attendance
- */
-app.get('/api/attendance/today', authenticateToken, async (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const snapshot = await db.ref(`attendance/${today}`).once('value');
-    const attendance = [];
-
-    snapshot.forEach((child) => {
-      const data = child.val();
-      if (req.user.role === 'admin' || data.userId === req.user.userId) {
-        attendance.push(data);
-      }
-    });
-
-    res.json({
-      success: true,
-      date: today,
-      attendance
-    });
-  } catch (error) {
-    console.error('Get today attendance error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * AI Summary for user (protected)
- */
-app.post('/api/ai/summary', authenticateToken, async (req, res) => {
-  const { startDate, endDate } = req.body;
-  const { userId, name } = req.user;
-  
-  try {
-    const attendanceSnapshot = await db.ref('attendance').once('value');
-    let userAttendance = [];
-    let totalPresent = 0;
-    let totalLate = 0;
-    
-    attendanceSnapshot.forEach((dateSnapshot) => {
-      const date = dateSnapshot.key;
-      if (startDate && date < startDate) return;
-      if (endDate && date > endDate) return;
-      
-      dateSnapshot.forEach((userSnapshot) => {
-        const data = userSnapshot.val();
-        if (data.userId === userId) {
-          userAttendance.push(data);
-          if (data.checkIn) {
-            totalPresent++;
-            if (data.isLate) totalLate++;
-          }
-        }
-      });
-    });
-    
-    const prompt = `Buatkan ringkasan absensi untuk karyawan bernama ${name} berdasarkan data berikut:
-- Total kehadiran: ${totalPresent} hari
-- Total keterlambatan: ${totalLate} hari
-- Periode: ${startDate || 'awal'} sampai ${endDate || 'sekarang'}
-
-Buatkan dalam bahasa Indonesia yang profesional dan berikan saran perbaikan jika ada keterlambatan.`;
-    
-    const result = await callGroqAPI([{ role: 'user', content: prompt }]);
-    
-    if (result.success) {
-      res.json({
-        success: true,
-        summary: result.content,
-        stats: {
-          totalPresent,
-          totalLate,
-          totalDays: userAttendance.length
-        }
-      });
-    } else {
-      res.status(500).json({
-        success: false,
-        error: result.error
-      });
-    }
-  } catch (error) {
-    console.error('AI summary error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
 // ============ ADMIN ONLY ROUTES ============
 
 /**
@@ -1248,35 +1011,6 @@ app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, re
     });
   } catch (error) {
     console.error('Delete user error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
-/**
- * Get attendance by date
- */
-app.get('/api/attendance/date/:date', authenticateToken, requireAdmin, async (req, res) => {
-  const { date } = req.params;
-
-  try {
-    const snapshot = await db.ref(`attendance/${date}`).once('value');
-    const attendance = [];
-
-    snapshot.forEach((child) => {
-      attendance.push(child.val());
-    });
-
-    res.json({
-      success: true,
-      attendance,
-      date,
-      total: attendance.length
-    });
-  } catch (error) {
-    console.error('Get attendance by date error:', error);
     res.status(500).json({
       success: false,
       error: 'Internal server error'
@@ -1363,6 +1097,8 @@ app.post('/api/whatsapp/broadcast', authenticateToken, requireAdmin, async (req,
         phoneNumber: user.phoneNumber,
         success: result.success
       });
+      // Delay untuk menghindari rate limit
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
     res.json({
@@ -1379,39 +1115,13 @@ app.post('/api/whatsapp/broadcast', authenticateToken, requireAdmin, async (req,
   }
 });
 
-/**
- * Get system logs (admin only)
- */
-app.get('/api/admin/logs', authenticateToken, requireAdmin, async (req, res) => {
-  try {
-    const logsRef = db.ref('system_logs');
-    const snapshot = await logsRef.orderByChild('timestamp').limitToLast(100).once('value');
-    const logs = [];
-    
-    snapshot.forEach((child) => {
-      logs.push(child.val());
-    });
-    
-    res.json({
-      success: true,
-      logs: logs.reverse()
-    });
-  } catch (error) {
-    console.error('Get logs error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error'
-    });
-  }
-});
-
 // ============ ERROR HANDLING ============
 
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    error: 'Route not found'
+    error: `Route not found: ${req.method} ${req.path}`
   });
 });
 
@@ -1420,14 +1130,17 @@ app.use((err, req, res, next) => {
   console.error('Global error:', err.stack);
   res.status(500).json({
     success: false,
-    error: 'Internal server error'
+    error: err.message || 'Internal server error'
   });
 });
 
-// Start server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`
+// ============ EXPORT FOR VERCEL ============
+// Vercel requires module.exports, not app.listen
+// Untuk development lokal, kita tetap bisa menggunakan app.listen
+if (process.env.NODE_ENV !== 'production') {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║     🚀 BACKEND SERVER STARTED SUCCESSFULLY                  ║
 ╠══════════════════════════════════════════════════════════════╣
@@ -1442,7 +1155,9 @@ app.listen(PORT, () => {
 ║  💬 WhatsApp: ${WHATSAPP_CONFIG.enabled ? '✅ Enabled' : '❌ Disabled'}                                       ║
 ║  🗄️ Supabase: ${SUPABASE_URL ? '✅ Configured' : '❌ Missing'}                                        ║
 ╚══════════════════════════════════════════════════════════════╝
-  `);
-});
+    `);
+  });
+}
 
+// Export untuk Vercel serverless functions
 module.exports = app;
