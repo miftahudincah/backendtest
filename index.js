@@ -129,41 +129,6 @@ app.use((req, res, next) => {
   next();
 });
 
-// Authentication Middleware
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      error: 'Access token required'
-    });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) {
-      return res.status(403).json({
-        success: false,
-        error: 'Invalid or expired token'
-      });
-    }
-    req.user = user;
-    next();
-  });
-};
-
-// Admin Middleware
-const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({
-      success: false,
-      error: 'Admin access required'
-    });
-  }
-  next();
-};
-
 // ============ HELPER FUNCTIONS ============
 
 // Upload image to IMGBB
@@ -239,10 +204,10 @@ async function callGroqAPI(messages) {
       content: response.data.choices[0].message.content
     };
   } catch (error) {
-    console.error('GROQ API error:', error);
+    console.error('GROQ API error:', error.response?.data || error.message);
     return {
       success: false,
-      error: error.message
+      error: error.response?.data?.error?.message || error.message
     };
   }
 }
@@ -267,10 +232,10 @@ async function callOpenAI(messages) {
       content: response.data.choices[0].message.content
     };
   } catch (error) {
-    console.error('OpenAI error:', error);
+    console.error('OpenAI error:', error.response?.data || error.message);
     return {
       success: false,
-      error: error.message
+      error: error.response?.data?.error?.message || error.message
     };
   }
 }
@@ -314,7 +279,42 @@ function isLate() {
   return (hour > 8) || (hour === 8 && minute > 0);
 }
 
-// ============ PUBLIC ROUTES ============
+// Authentication Middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({
+      success: false,
+      error: 'Access token required'
+    });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({
+        success: false,
+        error: 'Invalid or expired token'
+      });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// Admin Middleware
+const requireAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      error: 'Admin access required'
+    });
+  }
+  next();
+};
+
+// ============ PUBLIC ROUTES (No Auth Required) ============
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -416,9 +416,13 @@ app.post('/api/upload-supabase', upload.single('image'), async (req, res) => {
   }
 });
 
-// AI Chat via GROQ (public)
+// ============ AI CHAT ENDPOINTS (PUBLIC - NO AUTH REQUIRED) ============
+
+// AI Chat via GROQ (Public)
 app.post('/api/ai/groq', async (req, res) => {
   const { message, history = [] } = req.body;
+  
+  console.log('GROQ Request received:', message);
   
   if (!message) {
     return res.status(400).json({
@@ -428,7 +432,7 @@ app.post('/api/ai/groq', async (req, res) => {
   }
   
   const messages = [
-    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi.' },
+    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif.' },
     ...history,
     { role: 'user', content: message }
   ];
@@ -441,16 +445,19 @@ app.post('/api/ai/groq', async (req, res) => {
       response: result.content
     });
   } else {
+    console.error('GROQ API Error:', result.error);
     res.status(500).json({
       success: false,
-      error: result.error
+      error: result.error || 'GROQ API error'
     });
   }
 });
 
-// AI Chat via OpenAI (public)
+// AI Chat via OpenAI (Public)
 app.post('/api/ai/openai', async (req, res) => {
   const { message, history = [] } = req.body;
+  
+  console.log('OpenAI Request received:', message);
   
   if (!message) {
     return res.status(400).json({
@@ -460,7 +467,7 @@ app.post('/api/ai/openai', async (req, res) => {
   }
   
   const messages = [
-    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi.' },
+    { role: 'system', content: 'Anda adalah asisten AI yang membantu untuk sistem absensi. Jawab dengan bahasa Indonesia yang sopan dan informatif.' },
     ...history,
     { role: 'user', content: message }
   ];
@@ -473,9 +480,10 @@ app.post('/api/ai/openai', async (req, res) => {
       response: result.content
     });
   } else {
+    console.error('OpenAI API Error:', result.error);
     res.status(500).json({
       success: false,
-      error: result.error
+      error: result.error || 'OpenAI API error'
     });
   }
 });
@@ -650,7 +658,7 @@ app.post('/api/login', [
   }
 });
 
-// ============ PROTECTED ROUTES ============
+// ============ PROTECTED ROUTES (Auth Required) ============
 
 // Upload profile picture
 app.post('/api/upload-profile', authenticateToken, upload.single('image'), async (req, res) => {
@@ -705,7 +713,7 @@ app.post('/api/upload-attendance', authenticateToken, upload.single('image'), as
       });
     }
     
-    const storageType = req.body.storage || 'imgbb'; // 'imgbb' or 'supabase'
+    const storageType = req.body.storage || 'imgbb';
     let result;
     
     if (storageType === 'supabase') {
@@ -836,7 +844,6 @@ app.post('/api/attendance', authenticateToken, [
     const attendanceRef = db.ref(`attendance/${today}/${userId}`);
     const snapshot = await attendanceRef.once('value');
     
-    // Get user data for WhatsApp
     const userSnapshot = await db.ref(`users/${userId}`).once('value');
     const userData = userSnapshot.val();
     const late = isLate();
@@ -865,7 +872,6 @@ app.post('/api/attendance', authenticateToken, [
 
       await attendanceRef.set(checkInData);
 
-      // Send WhatsApp notification for check-in
       if (WHATSAPP_CONFIG.sendOnCheckIn && userData?.phoneNumber) {
         const statusText = late ? '⚠️ TERLAMBAT' : '✅ TEPAT WAKTU';
         const message = `📋 *NOTIFIKASI ABSENSI*\n\nHalo ${name},\n\nAnda telah melakukan Check-in pada:\n📅 Tanggal: ${today}\n🕐 Waktu: ${new Date().toLocaleTimeString()}\n📍 Lokasi: ${location || 'Tidak tersedia'}\n📝 Status: ${statusText}\n\n${late ? 'Harap lebih baik lagi kedepannya!' : 'Terima kasih sudah tepat waktu!'}`;
@@ -879,7 +885,6 @@ app.post('/api/attendance', authenticateToken, [
         isLate: late
       });
     } else {
-      // Check-out
       if (!snapshot.exists() || !snapshot.val().checkIn) {
         return res.status(400).json({
           success: false,
@@ -906,7 +911,6 @@ app.post('/api/attendance', authenticateToken, [
 
       await attendanceRef.set(checkOutData);
 
-      // Send WhatsApp notification for check-out
       if (WHATSAPP_CONFIG.sendOnCheckOut && userData?.phoneNumber) {
         const checkInTime = new Date(snapshot.val().checkIn);
         const checkOutTime = new Date();
@@ -1008,11 +1012,6 @@ app.post('/api/ai/summary', authenticateToken, async (req, res) => {
   const { userId, name } = req.user;
   
   try {
-    // Get attendance data for the user
-    let url = `${API_BASE_URL}/api/attendance?limit=100`;
-    if (startDate) url += `&startDate=${startDate}`;
-    if (endDate) url += `&endDate=${endDate}`;
-    
     const attendanceSnapshot = await db.ref('attendance').once('value');
     let userAttendance = [];
     let totalPresent = 0;
@@ -1039,7 +1038,6 @@ app.post('/api/ai/summary', authenticateToken, async (req, res) => {
 - Total kehadiran: ${totalPresent} hari
 - Total keterlambatan: ${totalLate} hari
 - Periode: ${startDate || 'awal'} sampai ${endDate || 'sekarang'}
-- Riwayat: ${JSON.stringify(userAttendance.slice(0, 10))}
 
 Buatkan dalam bahasa Indonesia yang profesional dan berikan saran perbaikan jika ada keterlambatan.`;
     
