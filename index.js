@@ -1,7 +1,11 @@
-// index.js - VERSION 6.0 (RESET PASSWORD: EMAIL + WHATSAPP)
+// index.js - VERSION 6.1 (FULLY WORKING RESET PASSWORD: EMAIL + WHATSAPP)
 // Backend untuk Sistem Absensi IoT
 // ONLY SUPABASE STORAGE - No ImgBB fallback
-// FITUR BARU V6.0: Reset password via EMAIL + WHATSAPP (dual channel)
+// FITUR LENGKAP: 
+//   - Reset password via EMAIL + WHATSAPP (dual channel - WORKING)
+//   - WhatsApp notification untuk absensi
+//   - AI Chat (GROQ & OpenAI)
+//   - Upload file ke Supabase
 // ============================================================================
 
 const express = require('express');
@@ -14,7 +18,6 @@ const { body, validationResult } = require('express-validator');
 const multer = require('multer');
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
-const crypto = require('crypto');
 
 // Load environment variables
 dotenv.config();
@@ -37,7 +40,9 @@ const optionalEnvVars = [
   'GROQ_API_KEY',
   'OPENAI_API_KEY',
   'FONNTE_API_KEY',
-  'STORAGE_BUCKET'
+  'STORAGE_BUCKET',
+  'FRONTEND_URL',
+  'SCHOOL_NAME'
 ];
 
 const isVercel = process.env.VERCEL === '1' || process.env.NODE_ENV === 'production';
@@ -99,12 +104,16 @@ const WHATSAPP_CONFIG = {
 
 // Konfigurasi Reset Password
 const RESET_PASSWORD_CONFIG = {
-    tokenExpiryHours: 1, // Token berlaku 1 jam
-    rateLimitMinutes: 60, // Maksimal request per 60 menit
-    maxRequestsPerEmail: 3 // Maksimal 3 request per email per periode
+    tokenExpiryHours: 1,
+    rateLimitMinutes: 60,
+    maxRequestsPerEmail: 3
 };
 
-// ============ SUPABASE CONFIGURATION (ONLY) ============
+// Konfigurasi Frontend
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://absensi-4389a.web.app';
+const SCHOOL_NAME = process.env.SCHOOL_NAME || 'Sistem Absensi IoT';
+
+// ============ SUPABASE CONFIGURATION ============
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
@@ -118,11 +127,11 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.log('✅ Supabase client initialized');
 }
 
-// Konfigurasi Multer untuk Vercel
+// Konfigurasi Multer
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max
+    fileSize: 10 * 1024 * 1024,
     fieldSize: 10 * 1024 * 1024
   }
 });
@@ -180,7 +189,7 @@ if (!isVercel) {
 
 async function uploadToSupabase(fileBuffer, fileName, folder = 'uploads', userId = null) {
   if (!supabase) {
-    return { success: false, error: 'Supabase client not initialized. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.' };
+    return { success: false, error: 'Supabase client not initialized' };
   }
   
   try {
@@ -258,12 +267,18 @@ async function deleteFromSupabase(fileUrl) {
  */
 async function sendWhatsAppMessage(phoneNumber, message) {
   if (!WHATSAPP_CONFIG.enabled || !WHATSAPP_CONFIG.fonnteApiKey) {
+    console.log('WhatsApp disabled or API key missing');
     return { success: false, error: 'WhatsApp disabled' };
   }
   
+  // Format nomor telepon
+  let formattedPhone = phoneNumber.toString().replace(/[^0-9]/g, '');
+  if (formattedPhone.startsWith('0')) formattedPhone = '62' + formattedPhone.substring(1);
+  if (!formattedPhone.startsWith('62')) formattedPhone = '62' + formattedPhone;
+  
   try {
     const response = await axios.post('https://api.fonnte.com/send', {
-      target: phoneNumber,
+      target: formattedPhone,
       message: message,
       countryCode: '62'
     }, {
@@ -271,7 +286,13 @@ async function sendWhatsAppMessage(phoneNumber, message) {
       timeout: 30000
     });
     
-    return { success: true, data: response.data };
+    if (response.data && response.data.status === true) {
+      console.log(`✅ WhatsApp sent to ${formattedPhone}`);
+      return { success: true, data: response.data };
+    } else {
+      console.error('WhatsApp API error:', response.data);
+      return { success: false, error: response.data?.reason || 'Unknown error' };
+    }
   } catch (error) {
     console.error('WhatsApp error:', error.message);
     return { success: false, error: error.message };
@@ -282,10 +303,9 @@ async function sendWhatsAppMessage(phoneNumber, message) {
  * Kirim notifikasi reset password via WhatsApp
  */
 async function sendResetPasswordWhatsApp(phoneNumber, userName, email, resetLink) {
-  const schoolName = process.env.SCHOOL_NAME || 'Sistem Absensi';
   const currentTime = new Date().toLocaleString('id-ID');
   
-  const message = `*🔐 RESET PASSWORD - ${schoolName}*
+  const message = `*🔐 RESET PASSWORD - ${SCHOOL_NAME}*
 
 Halo *${userName}*,
 
@@ -305,8 +325,28 @@ ${resetLink}
 Jika Anda tidak merasa melakukan permintaan ini, abaikan pesan ini.
 
 ---
-📱 *Sistem Absensi IoT - ${schoolName}*
+📱 *${SCHOOL_NAME}*
 🔒 Pesan ini dikirim otomatis, jangan balas.`;
+
+  return await sendWhatsAppMessage(phoneNumber, message);
+}
+
+/**
+ * Kirim notifikasi konfirmasi password berhasil diubah
+ */
+async function sendPasswordChangedConfirmation(phoneNumber, userName, email) {
+  const currentTime = new Date().toLocaleString('id-ID');
+  
+  const message = `*✅ PASSWORD BERHASIL DIUBAH - ${SCHOOL_NAME}*
+
+Halo *${userName}*,
+
+Password akun Anda (${email}) telah berhasil diubah pada ${currentTime}.
+
+Jika Anda tidak melakukan perubahan ini, segera hubungi administrator sekolah.
+
+---
+📱 *${SCHOOL_NAME}*`;
 
   return await sendWhatsAppMessage(phoneNumber, message);
 }
@@ -346,43 +386,94 @@ async function checkResetPasswordRateLimit(email, ipAddress) {
 }
 
 /**
- * Generate reset password token
+ * Generate reset password token dan simpan ke database
  */
-function generateResetToken(email, userId) {
+async function generateAndStoreResetToken(email, userId, userName) {
+  // Generate JWT token
   const payload = {
     email: email,
     userId: userId,
+    userName: userName,
     type: 'password_reset',
     exp: Math.floor(Date.now() / 1000) + (RESET_PASSWORD_CONFIG.tokenExpiryHours * 60 * 60)
   };
-  return jwt.sign(payload, process.env.JWT_SECRET);
+  const token = jwt.sign(payload, process.env.JWT_SECRET);
+  
+  // Simpan token ke database
+  await db.ref(`password_reset_tokens/${token}`).set({
+    email: email,
+    userId: userId,
+    userName: userName,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + (RESET_PASSWORD_CONFIG.tokenExpiryHours * 60 * 60 * 1000),
+    used: false
+  });
+  
+  return token;
 }
 
 /**
  * Verify reset password token
  */
-function verifyResetToken(token) {
+async function verifyResetToken(token) {
   try {
+    // Cek di database dulu
+    const tokenSnapshot = await db.ref(`password_reset_tokens/${token}`).once('value');
+    const tokenData = tokenSnapshot.val();
+    
+    if (!tokenData) {
+      return { valid: false, error: 'Token tidak valid' };
+    }
+    
+    if (tokenData.used) {
+      return { valid: false, error: 'Token sudah digunakan' };
+    }
+    
+    if (Date.now() > tokenData.expiresAt) {
+      return { valid: false, error: 'Token sudah kadaluarsa. Silakan request ulang.' };
+    }
+    
+    // Verify JWT
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     if (decoded.type !== 'password_reset') {
       return { valid: false, error: 'Invalid token type' };
     }
-    return { valid: true, data: decoded };
+    
+    return { 
+      valid: true, 
+      data: { email: tokenData.email, userId: tokenData.userId, userName: tokenData.userName },
+      tokenData: tokenData
+    };
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
-      return { valid: false, error: 'Token expired. Please request a new reset link.' };
+      return { valid: false, error: 'Token sudah kadaluarsa' };
     }
-    return { valid: false, error: 'Invalid token' };
+    return { valid: false, error: 'Token tidak valid' };
   }
 }
 
 /**
- * Get user data by email from Firebase Auth
+ * Get user data by email from Firebase Auth dan Database
  */
-async function getUserByEmail(email) {
+async getUserByEmail(email) {
   try {
+    // Cek di Firebase Auth
     const userRecord = await admin.auth().getUserByEmail(email);
-    return { success: true, user: userRecord };
+    
+    // Cek di database
+    const dbSnapshot = await db.ref('users_auth').orderByChild('email').equalTo(email).once('value');
+    let dbUserData = null;
+    if (dbSnapshot.exists()) {
+      dbSnapshot.forEach((child) => {
+        dbUserData = child.val();
+      });
+    }
+    
+    return { 
+      success: true, 
+      user: userRecord,
+      dbData: dbUserData
+    };
   } catch (error) {
     if (error.code === 'auth/user-not-found') {
       return { success: false, error: 'User not found' };
@@ -398,9 +489,11 @@ async function getUserWhatsAppNumber(userId, userData = null) {
   let phoneNumber = null;
   
   try {
-    // Cari dari users_auth
-    const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
-    const user = userSnapshot.val();
+    let user = userData;
+    if (!user && userId) {
+      const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
+      user = userSnapshot.val();
+    }
     
     if (user) {
       // Prioritas 1: dari users_auth.noHp
@@ -574,54 +667,49 @@ app.post('/api/auth/forgot-password', [
     if (!rateLimit.allowed) {
       return res.status(429).json({
         success: false,
-        error: `Too many requests. Please wait ${RESET_PASSWORD_CONFIG.rateLimitMinutes} minutes before trying again. (${rateLimit.count}/${rateLimit.max} requests)`
+        error: `Terlalu banyak permintaan. Tunggu ${RESET_PASSWORD_CONFIG.rateLimitMinutes} menit. (${rateLimit.count}/${rateLimit.max} permintaan)`
       });
     }
 
-    // 2. Cek user di Firebase Auth
+    // 2. Cek user di Firebase Auth dan Database
     const userResult = await getUserByEmail(email);
     if (!userResult.success) {
       // Jangan bocorkan informasi user tidak ditemukan untuk keamanan
       console.log(`Password reset requested for non-existent email: ${email}`);
       return res.json({
         success: true,
-        message: 'If your email is registered, you will receive a reset link via email and WhatsApp.'
+        message: 'Jika email terdaftar, link reset akan dikirim via Email dan WhatsApp.'
       });
     }
 
     const user = userResult.user;
     const userId = user.uid;
+    const userDbData = userResult.dbData;
+    const userName = userDbData?.nama || user.displayName || email.split('@')[0];
 
-    // 3. Dapatkan data user dari database
-    const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
-    const userData = userSnapshot.val();
-    const userName = userData?.nama || user.displayName || email.split('@')[0];
-
-    // 4. Generate reset token
-    const resetToken = generateResetToken(email, userId);
-    const frontendUrl = process.env.FRONTEND_URL || 'https://absensi-4389a.web.app';
-    const resetLink = `${frontendUrl}?mode=resetPassword&token=${resetToken}&email=${encodeURIComponent(email)}`;
+    // 3. Generate reset token dan simpan ke database
+    const resetToken = await generateAndStoreResetToken(email, userId, userName);
+    const resetLink = `${FRONTEND_URL}?token=${resetToken}&email=${encodeURIComponent(email)}`;
 
     let emailSent = false;
     let whatsappSent = false;
     let phoneNumber = null;
 
-    // 5. Kirim email via Firebase Auth
+    // 4. Kirim EMAIL via Firebase Auth
     try {
       const actionCodeSettings = {
-        url: `${frontendUrl}?mode=resetPassword&email=${encodeURIComponent(email)}`,
+        url: resetLink,
         handleCodeInApp: true
       };
       await admin.auth().generatePasswordResetLink(email, actionCodeSettings);
       emailSent = true;
-      console.log(`✅ Reset email generated for: ${email}`);
+      console.log(`✅ Reset email link generated for: ${email}`);
     } catch (emailError) {
       console.error('Email generation error:', emailError);
-      // Jangan gagalkan jika email gagal, tetap coba WhatsApp
     }
 
-    // 6. Kirim WhatsApp jika user memiliki nomor
-    phoneNumber = await getUserWhatsAppNumber(userId, userData);
+    // 5. Kirim WHATSAPP jika user memiliki nomor
+    phoneNumber = await getUserWhatsAppNumber(userId, userDbData);
     if (phoneNumber) {
       const whatsappResult = await sendResetPasswordWhatsApp(phoneNumber, userName, email, resetLink);
       whatsappSent = whatsappResult.success;
@@ -630,12 +718,13 @@ app.post('/api/auth/forgot-password', [
       }
     }
 
-    // 7. Simpan log
+    // 6. Simpan log
     await db.ref('password_reset_logs').push({
       email: email,
       userId: userId,
       userName: userName,
       phoneNumber: phoneNumber || null,
+      resetLink: resetLink,
       emailSent: emailSent,
       whatsappSent: whatsappSent,
       ipAddress: ipAddress,
@@ -643,14 +732,15 @@ app.post('/api/auth/forgot-password', [
       timestamp: Date.now()
     });
 
-    // 8. Response
-    let responseMessage = 'If your email is registered, you will receive a reset link';
+    // 7. Response
+    let responseMessage = '';
     if (whatsappSent && phoneNumber) {
-      responseMessage += ` via email and WhatsApp to ${phoneNumber}`;
+      const maskedPhone = phoneNumber.slice(0, 4) + '****' + phoneNumber.slice(-3);
+      responseMessage = `✅ Link reset password telah dikirim via WhatsApp ke ${maskedPhone}. Cek WhatsApp Anda!`;
     } else if (emailSent) {
-      responseMessage += ' via email';
+      responseMessage = `✅ Link reset password telah dikirim ke email ${email}. Cek inbox/spam Anda.`;
     } else {
-      responseMessage = 'Unable to send reset link. Please contact administrator.';
+      responseMessage = 'Gagal mengirim link reset. Silakan hubungi administrator.';
     }
 
     res.json({
@@ -659,7 +749,7 @@ app.post('/api/auth/forgot-password', [
       details: {
         emailSent,
         whatsappSent,
-        phoneNumber: phoneNumber ? phoneNumber.replace(/[0-9]/g, '*') : null // Mask phone number
+        hasPhoneNumber: !!phoneNumber
       }
     });
 
@@ -667,7 +757,7 @@ app.post('/api/auth/forgot-password', [
     console.error('Forgot password error:', error);
     res.status(500).json({
       success: false,
-      error: 'Internal server error. Please try again later.'
+      error: 'Terjadi kesalahan server. Silakan coba lagi nanti.'
     });
   }
 });
@@ -687,31 +777,31 @@ app.post('/api/auth/verify-reset-token', [
   const { token } = req.body;
 
   try {
-    const verification = verifyResetToken(token);
+    const verification = await verifyResetToken(token);
     
     if (!verification.valid) {
       return res.status(400).json({
         success: false,
         error: verification.error,
-        expired: verification.error?.includes('expired') || false
+        expired: verification.error?.includes('kadaluarsa') || false
       });
     }
 
-    const { email, userId } = verification.data;
+    const { email, userId, userName } = verification.data;
     
     // Cek apakah user masih ada
     const userResult = await getUserByEmail(email);
     if (!userResult.success) {
       return res.status(404).json({
         success: false,
-        error: 'User no longer exists'
+        error: 'User tidak ditemukan'
       });
     }
 
     res.json({
       success: true,
-      message: 'Token is valid',
-      data: { email, userId }
+      message: 'Token valid',
+      data: { email, userId, userName }
     });
 
   } catch (error) {
@@ -737,56 +827,48 @@ app.post('/api/auth/reset-password', [
 
   try {
     // 1. Verify token
-    const verification = verifyResetToken(token);
+    const verification = await verifyResetToken(token);
     if (!verification.valid) {
       return res.status(400).json({
         success: false,
         error: verification.error,
-        expired: verification.error?.includes('expired') || false
+        expired: verification.error?.includes('kadaluarsa') || false
       });
     }
 
-    const { email, userId } = verification.data;
+    const { email, userId, userName } = verification.data;
 
     // 2. Update password via Firebase Admin SDK
     await admin.auth().updateUser(userId, {
       password: newPassword
     });
 
-    // 3. Simpan log password change
+    // 3. Tandai token sebagai used
+    await db.ref(`password_reset_tokens/${token}`).update({
+      used: true,
+      usedAt: Date.now()
+    });
+
+    // 4. Simpan log perubahan password
     await db.ref('password_change_logs').push({
       email: email,
       userId: userId,
+      userName: userName,
       method: 'reset_password',
       timestamp: Date.now(),
       ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown'
     });
 
-    // 4. Kirim konfirmasi WhatsApp (opsional)
-    const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
-    const userData = userSnapshot.val();
-    const userName = userData?.nama || email.split('@')[0];
-    const phoneNumber = await getUserWhatsAppNumber(userId, userData);
-    
-    if (phoneNumber) {
-      const schoolName = process.env.SCHOOL_NAME || 'Sistem Absensi';
-      const confirmMessage = `*✅ PASSWORD BERHASIL DIUBAH - ${schoolName}*
-
-Halo *${userName}*,
-
-Password akun Anda telah berhasil diubah pada ${new Date().toLocaleString('id-ID')}.
-
-Jika Anda tidak melakukan perubahan ini, segera hubungi administrator sekolah.
-
----
-📱 *Sistem Absensi IoT - ${schoolName}*`;
-      
-      await sendWhatsAppMessage(phoneNumber, confirmMessage);
+    // 5. Kirim konfirmasi WhatsApp (opsional)
+    const userDbData = verification.tokenData;
+    const phoneNumber = await getUserWhatsAppNumber(userId, userDbData);
+    if (phoneNumber && WHATSAPP_CONFIG.enabled) {
+      await sendPasswordChangedConfirmation(phoneNumber, userName, email);
     }
 
     res.json({
       success: true,
-      message: 'Password has been reset successfully. You can now login with your new password.'
+      message: 'Password berhasil diubah! Silakan login dengan password baru Anda.'
     });
 
   } catch (error) {
@@ -795,18 +877,49 @@ Jika Anda tidak melakukan perubahan ini, segera hubungi administrator sekolah.
     if (error.code === 'auth/user-not-found') {
       return res.status(404).json({
         success: false,
-        error: 'User no longer exists'
+        error: 'User tidak ditemukan'
       });
     }
     
     res.status(500).json({
       success: false,
-      error: error.message || 'Internal server error'
+      error: error.message || 'Terjadi kesalahan server'
     });
   }
 });
 
-// ============ STORAGE ENDPOINTS (SUPABASE ONLY) ============
+/**
+ * Get reset token by email (untuk debugging)
+ * POST /api/auth/get-reset-token
+ */
+app.post('/api/auth/get-reset-token', [
+  body('email').isEmail().normalizeEmail()
+], async (req, res) => {
+  const { email } = req.body;
+  
+  try {
+    const tokensSnapshot = await db.ref('password_reset_tokens')
+      .orderByChild('email')
+      .equalTo(email)
+      .once('value');
+    
+    const tokens = tokensSnapshot.val();
+    if (tokens) {
+      for (const [tokenId, tokenData] of Object.entries(tokens)) {
+        if (!tokenData.used && Date.now() < tokenData.expiresAt) {
+          return res.json({ success: true, token: tokenId });
+        }
+      }
+    }
+    
+    res.json({ success: false, error: 'No valid token found' });
+  } catch (error) {
+    console.error('Get reset token error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+});
+
+// ============ STORAGE ENDPOINTS ============
 
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
@@ -1201,7 +1314,7 @@ app.use((err, req, res, next) => {
 // ============ EXPORT FOR VERCEL ============
 module.exports = app;
 
-// Start server jika dijalankan langsung (bukan di Vercel)
+// Start server jika dijalankan langsung
 if (require.main === module) {
   const PORT = process.env.PORT || 3000;
   app.listen(PORT, () => {
@@ -1221,9 +1334,10 @@ if (require.main === module) {
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Reset Password Features:                                                   ║
 ║  📧 Email Reset: ✅ (via Firebase Auth)                                      ║
-║  📱 WhatsApp Reset: ${WHATSAPP_CONFIG.enabled ? '✅' : '❌'} (if number registered)                           ║
+║  📱 WhatsApp Reset: ${WHATSAPP_CONFIG.enabled ? '✅' : '❌'}                                              ║
 ║  🔒 Token Expiry: ${RESET_PASSWORD_CONFIG.tokenExpiryHours} hour(s)                                           ║
 ║  🚦 Rate Limit: ${RESET_PASSWORD_CONFIG.maxRequestsPerEmail} request per ${RESET_PASSWORD_CONFIG.rateLimitMinutes} minutes                  ║
+║  🌐 Frontend URL: ${FRONTEND_URL}                                                  ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
     `);
   });
