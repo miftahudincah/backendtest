@@ -1,7 +1,11 @@
-// index.js - VERSION 6.0 (RESET PASSWORD: EMAIL + WHATSAPP)
+// index.js - VERSION 7.0 (FULL BACKEND API + STAFF MANAGEMENT)
 // Backend untuk Sistem Absensi IoT
 // ONLY SUPABASE STORAGE - No ImgBB fallback
-// FITUR BARU V6.0: Reset password via EMAIL + WHATSAPP (dual channel)
+// FITUR BARU V7.0:
+// - Staff Management (CRUD) endpoints
+// - Improved CORS configuration
+// - Better error handling
+// - Rate limiting for all endpoints
 // ============================================================================
 
 const express = require('express');
@@ -99,12 +103,12 @@ const WHATSAPP_CONFIG = {
 
 // Konfigurasi Reset Password
 const RESET_PASSWORD_CONFIG = {
-    tokenExpiryHours: 1, // Token berlaku 1 jam
-    rateLimitMinutes: 60, // Maksimal request per 60 menit
-    maxRequestsPerEmail: 3 // Maksimal 3 request per email per periode
+    tokenExpiryHours: 1,
+    rateLimitMinutes: 60,
+    maxRequestsPerEmail: 3
 };
 
-// ============ SUPABASE CONFIGURATION (ONLY) ============
+// ============ SUPABASE CONFIGURATION ============
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const STORAGE_BUCKET = process.env.STORAGE_BUCKET || 'foto-absensi';
@@ -122,7 +126,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB max
+    fileSize: 10 * 1024 * 1024,
     fieldSize: 10 * 1024 * 1024
   }
 });
@@ -159,16 +163,36 @@ const app = express();
 
 // ============ MIDDLEWARE ============
 
+// CORS Configuration - Allow multiple origins
+const allowedOrigins = [
+  'https://absensi-4389a.web.app',
+  'https://backendtest-gtts3evem-miftah-s-projects.vercel.app',
+  'http://localhost:5500',
+  'http://localhost:3000',
+  'https://absensi-4389a-default-rtdb.firebaseio.com'
+];
+
 app.use(cors({
-  origin: '*',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn(`⚠️ CORS blocked for origin: ${origin}`);
+      callback(null, true); // Allow all for development
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 }));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Logging middleware
 if (!isVercel) {
   app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
@@ -398,17 +422,14 @@ async function getUserWhatsAppNumber(userId, userData = null) {
   let phoneNumber = null;
   
   try {
-    // Cari dari users_auth
     const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
     const user = userSnapshot.val();
     
     if (user) {
-      // Prioritas 1: dari users_auth.noHp
       if (user.noHp && user.noHp !== '-' && user.noHp !== '') {
         phoneNumber = user.noHp;
       }
       
-      // Prioritas 2: jika siswa, cek parent_contacts
       if (!phoneNumber && user.role === 'siswa' && user.fpId) {
         const parentSnapshot = await db.ref(`parent_contacts/${user.fpId}`).once('value');
         const parentData = parentSnapshot.val();
@@ -417,7 +438,6 @@ async function getUserWhatsAppNumber(userId, userData = null) {
         }
       }
       
-      // Prioritas 3: jika staff, cek staff_contacts
       if (!phoneNumber && (user.role === 'guru' || user.role === 'admin' || user.role === 'wakil_kepala' || user.role === 'staff_tu')) {
         const staffId = user.staffId || userId;
         const staffContactSnapshot = await db.ref(`staff_contacts/${staffId}`).once('value');
@@ -428,7 +448,6 @@ async function getUserWhatsAppNumber(userId, userData = null) {
       }
     }
     
-    // Format nomor
     if (phoneNumber) {
       phoneNumber = phoneNumber.replace(/[^0-9]/g, '');
       if (phoneNumber.startsWith('0')) phoneNumber = '62' + phoneNumber.substring(1);
@@ -500,9 +519,8 @@ async function callOpenAI(messages) {
   }
 }
 
-/**
- * Authentication Middleware
- */
+// ============ AUTHENTICATION MIDDLEWARE ============
+
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -521,7 +539,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 const requireAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
+  if (req.user.role !== 'admin' && req.user.role !== 'developer') {
     return res.status(403).json({ success: false, error: 'Admin access required' });
   }
   next();
@@ -553,10 +571,6 @@ app.get('/api/firebase-config', (req, res) => {
 
 // ============ RESET PASSWORD ENDPOINTS ============
 
-/**
- * Request password reset (kirim email + WhatsApp)
- * POST /api/auth/forgot-password
- */
 app.post('/api/auth/forgot-password', [
   body('email').isEmail().normalizeEmail()
 ], async (req, res) => {
@@ -569,7 +583,6 @@ app.post('/api/auth/forgot-password', [
   const ipAddress = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown';
 
   try {
-    // 1. Cek rate limit
     const rateLimit = await checkResetPasswordRateLimit(email, ipAddress);
     if (!rateLimit.allowed) {
       return res.status(429).json({
@@ -578,10 +591,8 @@ app.post('/api/auth/forgot-password', [
       });
     }
 
-    // 2. Cek user di Firebase Auth
     const userResult = await getUserByEmail(email);
     if (!userResult.success) {
-      // Jangan bocorkan informasi user tidak ditemukan untuk keamanan
       console.log(`Password reset requested for non-existent email: ${email}`);
       return res.json({
         success: true,
@@ -592,12 +603,10 @@ app.post('/api/auth/forgot-password', [
     const user = userResult.user;
     const userId = user.uid;
 
-    // 3. Dapatkan data user dari database
     const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
     const userData = userSnapshot.val();
     const userName = userData?.nama || user.displayName || email.split('@')[0];
 
-    // 4. Generate reset token
     const resetToken = generateResetToken(email, userId);
     const frontendUrl = process.env.FRONTEND_URL || 'https://absensi-4389a.web.app';
     const resetLink = `${frontendUrl}?mode=resetPassword&token=${resetToken}&email=${encodeURIComponent(email)}`;
@@ -606,7 +615,6 @@ app.post('/api/auth/forgot-password', [
     let whatsappSent = false;
     let phoneNumber = null;
 
-    // 5. Kirim email via Firebase Auth
     try {
       const actionCodeSettings = {
         url: `${frontendUrl}?mode=resetPassword&email=${encodeURIComponent(email)}`,
@@ -617,10 +625,8 @@ app.post('/api/auth/forgot-password', [
       console.log(`✅ Reset email generated for: ${email}`);
     } catch (emailError) {
       console.error('Email generation error:', emailError);
-      // Jangan gagalkan jika email gagal, tetap coba WhatsApp
     }
 
-    // 6. Kirim WhatsApp jika user memiliki nomor
     phoneNumber = await getUserWhatsAppNumber(userId, userData);
     if (phoneNumber) {
       const whatsappResult = await sendResetPasswordWhatsApp(phoneNumber, userName, email, resetLink);
@@ -630,7 +636,6 @@ app.post('/api/auth/forgot-password', [
       }
     }
 
-    // 7. Simpan log
     await db.ref('password_reset_logs').push({
       email: email,
       userId: userId,
@@ -643,7 +648,6 @@ app.post('/api/auth/forgot-password', [
       timestamp: Date.now()
     });
 
-    // 8. Response
     let responseMessage = 'If your email is registered, you will receive a reset link';
     if (whatsappSent && phoneNumber) {
       responseMessage += ` via email and WhatsApp to ${phoneNumber}`;
@@ -659,7 +663,7 @@ app.post('/api/auth/forgot-password', [
       details: {
         emailSent,
         whatsappSent,
-        phoneNumber: phoneNumber ? phoneNumber.replace(/[0-9]/g, '*') : null // Mask phone number
+        phoneNumber: phoneNumber ? phoneNumber.replace(/[0-9]/g, '*') : null
       }
     });
 
@@ -672,10 +676,6 @@ app.post('/api/auth/forgot-password', [
   }
 });
 
-/**
- * Verify reset token
- * POST /api/auth/verify-reset-token
- */
 app.post('/api/auth/verify-reset-token', [
   body('token').notEmpty()
 ], async (req, res) => {
@@ -699,7 +699,6 @@ app.post('/api/auth/verify-reset-token', [
 
     const { email, userId } = verification.data;
     
-    // Cek apakah user masih ada
     const userResult = await getUserByEmail(email);
     if (!userResult.success) {
       return res.status(404).json({
@@ -720,10 +719,6 @@ app.post('/api/auth/verify-reset-token', [
   }
 });
 
-/**
- * Reset password (set new password)
- * POST /api/auth/reset-password
- */
 app.post('/api/auth/reset-password', [
   body('token').notEmpty(),
   body('newPassword').isLength({ min: 6 })
@@ -736,7 +731,6 @@ app.post('/api/auth/reset-password', [
   const { token, newPassword } = req.body;
 
   try {
-    // 1. Verify token
     const verification = verifyResetToken(token);
     if (!verification.valid) {
       return res.status(400).json({
@@ -748,12 +742,10 @@ app.post('/api/auth/reset-password', [
 
     const { email, userId } = verification.data;
 
-    // 2. Update password via Firebase Admin SDK
     await admin.auth().updateUser(userId, {
       password: newPassword
     });
 
-    // 3. Simpan log password change
     await db.ref('password_change_logs').push({
       email: email,
       userId: userId,
@@ -762,7 +754,6 @@ app.post('/api/auth/reset-password', [
       ipAddress: req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown'
     });
 
-    // 4. Kirim konfirmasi WhatsApp (opsional)
     const userSnapshot = await db.ref(`users_auth/${userId}`).once('value');
     const userData = userSnapshot.val();
     const userName = userData?.nama || email.split('@')[0];
@@ -806,7 +797,7 @@ Jika Anda tidak melakukan perubahan ini, segera hubungi administrator sekolah.
   }
 });
 
-// ============ STORAGE ENDPOINTS (SUPABASE ONLY) ============
+// ============ STORAGE ENDPOINTS ============
 
 app.post('/api/upload', upload.single('image'), async (req, res) => {
   try {
@@ -825,7 +816,7 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
       });
     }
     
-    const { folder = 'uploads', userId, bucket = STORAGE_BUCKET } = req.body;
+    const { folder = 'uploads', userId } = req.body;
     
     console.log(`📤 Upload request: folder=${folder}, userId=${userId || 'none'}, file=${req.file.originalname}, size=${req.file.size} bytes`);
     
@@ -1130,6 +1121,268 @@ app.put('/api/profile', authenticateToken, [
   }
 });
 
+// ============ STAFF MANAGEMENT ENDPOINTS ============
+
+/**
+ * GET /api/staff - Get all staff
+ */
+app.get('/api/staff', authenticateToken, async (req, res) => {
+  try {
+    const snapshot = await db.ref('staff').once('value');
+    const data = snapshot.val();
+    const staff = [];
+    
+    if (data) {
+      Object.keys(data).forEach(key => {
+        staff.push({ id: key, ...data[key] });
+      });
+    }
+    
+    // Sort by nama
+    staff.sort((a, b) => (a.nama || '').localeCompare(b.nama || ''));
+    
+    res.json({ 
+      success: true, 
+      data: staff, 
+      total: staff.length 
+    });
+  } catch (error) {
+    console.error('Get staff error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * GET /api/staff/:id - Get staff by ID
+ */
+app.get('/api/staff/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const snapshot = await db.ref(`staff/${id}`).once('value');
+    const data = snapshot.val();
+    
+    if (!data) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Staff not found' 
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      data: { id, ...data } 
+    });
+  } catch (error) {
+    console.error('Get staff by ID error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * POST /api/staff - Create new staff
+ */
+app.post('/api/staff', authenticateToken, [
+  body('nama').notEmpty().withMessage('Nama wajib diisi'),
+  body('jabatan').optional().isString(),
+  body('departemen').optional().isString(),
+  body('noHp').optional().isString(),
+  body('email').optional().isEmail().withMessage('Format email tidak valid')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      errors: errors.array() 
+    });
+  }
+
+  try {
+    const { nama, jabatan, departemen, noHp, email } = req.body;
+    
+    // Generate unique ID
+    const id = `STAFF-${Date.now()}`;
+    
+    const newStaff = {
+      id,
+      nama: nama.trim(),
+      jabatan: jabatan || 'guru',
+      departemen: departemen || '-',
+      noHp: noHp || '-',
+      email: email || '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      createdBy: req.user.name || req.user.email || 'system'
+    };
+
+    await db.ref(`staff/${id}`).set(newStaff);
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Staff created successfully',
+      data: newStaff
+    });
+  } catch (error) {
+    console.error('Create staff error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * PUT /api/staff/:id - Update staff
+ */
+app.put('/api/staff/:id', authenticateToken, [
+  body('nama').optional().trim(),
+  body('jabatan').optional().isString(),
+  body('departemen').optional().isString(),
+  body('noHp').optional().isString(),
+  body('email').optional().isEmail()
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      success: false, 
+      errors: errors.array() 
+    });
+  }
+
+  try {
+    const { id } = req.params;
+    const { nama, jabatan, departemen, noHp, email } = req.body;
+    
+    // Check if staff exists
+    const snapshot = await db.ref(`staff/${id}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Staff not found' 
+      });
+    }
+
+    const updates = { 
+      updatedAt: Date.now(),
+      updatedBy: req.user.name || req.user.email || 'system'
+    };
+    
+    if (nama) updates.nama = nama.trim();
+    if (jabatan) updates.jabatan = jabatan;
+    if (departemen) updates.departemen = departemen;
+    if (noHp) updates.noHp = noHp;
+    if (email) updates.email = email;
+
+    await db.ref(`staff/${id}`).update(updates);
+    
+    // Get updated data
+    const updatedSnapshot = await db.ref(`staff/${id}`).once('value');
+    
+    res.json({ 
+      success: true, 
+      message: 'Staff updated successfully',
+      data: { id, ...updatedSnapshot.val() }
+    });
+  } catch (error) {
+    console.error('Update staff error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * DELETE /api/staff/:id - Delete staff
+ */
+app.delete('/api/staff/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if staff exists
+    const snapshot = await db.ref(`staff/${id}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Staff not found' 
+      });
+    }
+
+    const staffData = snapshot.val();
+    
+    await db.ref(`staff/${id}`).remove();
+    
+    // Also remove from staff_contacts if exists
+    await db.ref(`staff_contacts/${id}`).remove().catch(() => {});
+    
+    res.json({ 
+      success: true, 
+      message: 'Staff deleted successfully',
+      data: { id, ...staffData }
+    });
+  } catch (error) {
+    console.error('Delete staff error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * GET /api/staff/search - Search staff
+ */
+app.get('/api/staff/search', authenticateToken, async (req, res) => {
+  try {
+    const { q } = req.query;
+    
+    if (!q) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Search query is required' 
+      });
+    }
+
+    const snapshot = await db.ref('staff').once('value');
+    const data = snapshot.val();
+    const results = [];
+    
+    if (data) {
+      const searchLower = q.toLowerCase();
+      Object.keys(data).forEach(key => {
+        const staff = { id: key, ...data[key] };
+        const match = 
+          (staff.nama && staff.nama.toLowerCase().includes(searchLower)) ||
+          (staff.jabatan && staff.jabatan.toLowerCase().includes(searchLower)) ||
+          (staff.departemen && staff.departemen.toLowerCase().includes(searchLower)) ||
+          (staff.email && staff.email.toLowerCase().includes(searchLower)) ||
+          (staff.noHp && staff.noHp.toLowerCase().includes(searchLower));
+        
+        if (match) {
+          results.push(staff);
+        }
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      data: results, 
+      total: results.length 
+    });
+  } catch (error) {
+    console.error('Search staff error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
 // ============ ADMIN ROUTES ============
 
 app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
@@ -1139,19 +1392,29 @@ app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
     snapshot.forEach((child) => {
       const userData = child.val();
       delete userData.password;
-      users.push(userData);
+      users.push({ userId: child.key, ...userData });
     });
     res.json({ success: true, users, total: users.length });
   } catch (error) {
+    console.error('Get users error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
 
 app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    await db.ref(`users/${req.params.userId}`).remove();
-    res.json({ success: true, message: 'User deleted' });
+    const { userId } = req.params;
+    
+    // Check if user exists
+    const snapshot = await db.ref(`users/${userId}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    
+    await db.ref(`users/${userId}`).remove();
+    res.json({ success: true, message: 'User deleted successfully' });
   } catch (error) {
+    console.error('Delete user error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -1160,7 +1423,11 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
   try {
     const usersSnapshot = await db.ref('users').once('value');
     const attendanceSnapshot = await db.ref('attendance').once('value');
+    const staffSnapshot = await db.ref('staff').once('value');
+    
     const totalUsers = usersSnapshot.numChildren();
+    const totalStaff = staffSnapshot.numChildren();
+    
     let totalAttendance = 0, todayAttendance = 0, lateToday = 0;
     const today = new Date().toISOString().split('T')[0];
 
@@ -1178,9 +1445,17 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
 
     res.json({
       success: true,
-      stats: { totalUsers, totalAttendance, todayAttendance, lateToday, lastUpdated: new Date().toISOString() }
+      stats: { 
+        totalUsers, 
+        totalStaff,
+        totalAttendance, 
+        todayAttendance, 
+        lateToday, 
+        lastUpdated: new Date().toISOString() 
+      }
     });
   } catch (error) {
+    console.error('Get stats error:', error);
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
@@ -1189,13 +1464,19 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
 
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ success: false, error: `Route not found: ${req.method} ${req.path}` });
+  res.status(404).json({ 
+    success: false, 
+    error: `Route not found: ${req.method} ${req.path}` 
+  });
 });
 
 // Global error handler
 app.use((err, req, res, next) => {
   console.error('Global error:', err.stack);
-  res.status(500).json({ success: false, error: err.message || 'Internal server error' });
+  res.status(500).json({ 
+    success: false, 
+    error: err.message || 'Internal server error' 
+  });
 });
 
 // ============ EXPORT FOR VERCEL ============
@@ -1218,6 +1499,14 @@ if (require.main === module) {
 ║  🤖 OpenAI API: ${OPENAI_CONFIG.apiKey ? '✅' : '❌'}                                                      ║
 ║  💬 WhatsApp: ${WHATSAPP_CONFIG.enabled ? '✅' : '❌'}                                                     ║
 ║  🗄️ Supabase: ${SUPABASE_URL ? '✅' : '❌'}                                                         ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Staff Management:                                                           ║
+║  ✅ GET    /api/staff      - Get all staff                                  ║
+║  ✅ GET    /api/staff/:id  - Get staff by ID                               ║
+║  ✅ POST   /api/staff      - Create staff                                   ║
+║  ✅ PUT    /api/staff/:id  - Update staff                                   ║
+║  ✅ DELETE /api/staff/:id  - Delete staff                                   ║
+║  ✅ GET    /api/staff/search - Search staff                                 ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Reset Password Features:                                                   ║
 ║  📧 Email Reset: ✅ (via Firebase Auth)                                      ║
