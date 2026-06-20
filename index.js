@@ -1,7 +1,10 @@
-// index.js - VERSION 7.0 (FULL BACKEND API + STAFF MANAGEMENT)
+// index.js - VERSION 7.1 (FULL BACKEND API + STAFF MANAGEMENT + IZIN ONLINE)
 // Backend untuk Sistem Absensi IoT
 // ONLY SUPABASE STORAGE - No ImgBB fallback
-// FITUR BARU V7.0:
+// FITUR BARU V7.1:
+// - Izin Online (CRUD) endpoints
+// - Upload attachment untuk izin
+// - Approve/Reject izin dengan alasan
 // - Staff Management (CRUD) endpoints
 // - Improved CORS configuration
 // - Better error handling
@@ -174,13 +177,12 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       console.warn(`⚠️ CORS blocked for origin: ${origin}`);
-      callback(null, true); // Allow all for development
+      callback(null, true);
     }
   },
   credentials: true,
@@ -204,7 +206,7 @@ if (!isVercel) {
 
 async function uploadToSupabase(fileBuffer, fileName, folder = 'uploads', userId = null) {
   if (!supabase) {
-    return { success: false, error: 'Supabase client not initialized. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.' };
+    return { success: false, error: 'Supabase client not initialized.' };
   }
   
   try {
@@ -277,9 +279,6 @@ async function deleteFromSupabase(fileUrl) {
 
 // ============ HELPER FUNCTIONS ============
 
-/**
- * Kirim pesan WhatsApp via Fonnte
- */
 async function sendWhatsAppMessage(phoneNumber, message) {
   if (!WHATSAPP_CONFIG.enabled || !WHATSAPP_CONFIG.fonnteApiKey) {
     return { success: false, error: 'WhatsApp disabled' };
@@ -302,9 +301,6 @@ async function sendWhatsAppMessage(phoneNumber, message) {
   }
 }
 
-/**
- * Kirim notifikasi reset password via WhatsApp
- */
 async function sendResetPasswordWhatsApp(phoneNumber, userName, email, resetLink) {
   const schoolName = process.env.SCHOOL_NAME || 'Sistem Absensi';
   const currentTime = new Date().toLocaleString('id-ID');
@@ -335,9 +331,6 @@ Jika Anda tidak merasa melakukan permintaan ini, abaikan pesan ini.
   return await sendWhatsAppMessage(phoneNumber, message);
 }
 
-/**
- * Cek rate limit untuk reset password
- */
 async function checkResetPasswordRateLimit(email, ipAddress) {
   const now = Date.now();
   const rateLimitMs = RESET_PASSWORD_CONFIG.rateLimitMinutes * 60 * 1000;
@@ -369,9 +362,6 @@ async function checkResetPasswordRateLimit(email, ipAddress) {
   }
 }
 
-/**
- * Generate reset password token
- */
 function generateResetToken(email, userId) {
   const payload = {
     email: email,
@@ -382,9 +372,6 @@ function generateResetToken(email, userId) {
   return jwt.sign(payload, process.env.JWT_SECRET);
 }
 
-/**
- * Verify reset password token
- */
 function verifyResetToken(token) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
@@ -400,9 +387,6 @@ function verifyResetToken(token) {
   }
 }
 
-/**
- * Get user data by email from Firebase Auth
- */
 async function getUserByEmail(email) {
   try {
     const userRecord = await admin.auth().getUserByEmail(email);
@@ -415,9 +399,6 @@ async function getUserByEmail(email) {
   }
 }
 
-/**
- * Get user WhatsApp number from database
- */
 async function getUserWhatsAppNumber(userId, userData = null) {
   let phoneNumber = null;
   
@@ -461,9 +442,6 @@ async function getUserWhatsAppNumber(userId, userData = null) {
   }
 }
 
-/**
- * Call GROQ API
- */
 async function callGroqAPI(messages) {
   if (!GROQ_API_KEY) {
     return { success: false, error: 'GROQ_API_KEY not configured' };
@@ -490,9 +468,6 @@ async function callGroqAPI(messages) {
   }
 }
 
-/**
- * Call OpenAI API
- */
 async function callOpenAI(messages) {
   if (!OPENAI_CONFIG.apiKey) {
     return { success: false, error: 'OPENAI_API_KEY not configured' };
@@ -587,7 +562,7 @@ app.post('/api/auth/forgot-password', [
     if (!rateLimit.allowed) {
       return res.status(429).json({
         success: false,
-        error: `Too many requests. Please wait ${RESET_PASSWORD_CONFIG.rateLimitMinutes} minutes before trying again. (${rateLimit.count}/${rateLimit.max} requests)`
+        error: `Too many requests. Please wait ${RESET_PASSWORD_CONFIG.rateLimitMinutes} minutes. (${rateLimit.count}/${rateLimit.max} requests)`
       });
     }
 
@@ -596,7 +571,7 @@ app.post('/api/auth/forgot-password', [
       console.log(`Password reset requested for non-existent email: ${email}`);
       return res.json({
         success: true,
-        message: 'If your email is registered, you will receive a reset link via email and WhatsApp.'
+        message: 'If your email is registered, you will receive a reset link.'
       });
     }
 
@@ -804,7 +779,7 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({
         success: false,
-        error: 'No image file provided. Please upload a file with field name "image".'
+        error: 'No image file provided.'
       });
     }
     
@@ -818,7 +793,7 @@ app.post('/api/upload', upload.single('image'), async (req, res) => {
     
     const { folder = 'uploads', userId } = req.body;
     
-    console.log(`📤 Upload request: folder=${folder}, userId=${userId || 'none'}, file=${req.file.originalname}, size=${req.file.size} bytes`);
+    console.log(`📤 Upload request: folder=${folder}, userId=${userId || 'none'}, file=${req.file.originalname}`);
     
     const result = await uploadToSupabase(req.file.buffer, req.file.originalname, folder, userId);
     
@@ -1123,9 +1098,6 @@ app.put('/api/profile', authenticateToken, [
 
 // ============ STAFF MANAGEMENT ENDPOINTS ============
 
-/**
- * GET /api/staff - Get all staff
- */
 app.get('/api/staff', authenticateToken, async (req, res) => {
   try {
     const snapshot = await db.ref('staff').once('value');
@@ -1138,7 +1110,6 @@ app.get('/api/staff', authenticateToken, async (req, res) => {
       });
     }
     
-    // Sort by nama
     staff.sort((a, b) => (a.nama || '').localeCompare(b.nama || ''));
     
     res.json({ 
@@ -1155,9 +1126,6 @@ app.get('/api/staff', authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * GET /api/staff/:id - Get staff by ID
- */
 app.get('/api/staff/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -1184,9 +1152,6 @@ app.get('/api/staff/:id', authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * POST /api/staff - Create new staff
- */
 app.post('/api/staff', authenticateToken, [
   body('nama').notEmpty().withMessage('Nama wajib diisi'),
   body('jabatan').optional().isString(),
@@ -1205,7 +1170,6 @@ app.post('/api/staff', authenticateToken, [
   try {
     const { nama, jabatan, departemen, noHp, email } = req.body;
     
-    // Generate unique ID
     const id = `STAFF-${Date.now()}`;
     
     const newStaff = {
@@ -1236,9 +1200,6 @@ app.post('/api/staff', authenticateToken, [
   }
 });
 
-/**
- * PUT /api/staff/:id - Update staff
- */
 app.put('/api/staff/:id', authenticateToken, [
   body('nama').optional().trim(),
   body('jabatan').optional().isString(),
@@ -1258,7 +1219,6 @@ app.put('/api/staff/:id', authenticateToken, [
     const { id } = req.params;
     const { nama, jabatan, departemen, noHp, email } = req.body;
     
-    // Check if staff exists
     const snapshot = await db.ref(`staff/${id}`).once('value');
     if (!snapshot.exists()) {
       return res.status(404).json({ 
@@ -1280,7 +1240,6 @@ app.put('/api/staff/:id', authenticateToken, [
 
     await db.ref(`staff/${id}`).update(updates);
     
-    // Get updated data
     const updatedSnapshot = await db.ref(`staff/${id}`).once('value');
     
     res.json({ 
@@ -1297,14 +1256,10 @@ app.put('/api/staff/:id', authenticateToken, [
   }
 });
 
-/**
- * DELETE /api/staff/:id - Delete staff
- */
 app.delete('/api/staff/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Check if staff exists
     const snapshot = await db.ref(`staff/${id}`).once('value');
     if (!snapshot.exists()) {
       return res.status(404).json({ 
@@ -1316,8 +1271,6 @@ app.delete('/api/staff/:id', authenticateToken, async (req, res) => {
     const staffData = snapshot.val();
     
     await db.ref(`staff/${id}`).remove();
-    
-    // Also remove from staff_contacts if exists
     await db.ref(`staff_contacts/${id}`).remove().catch(() => {});
     
     res.json({ 
@@ -1334,9 +1287,6 @@ app.delete('/api/staff/:id', authenticateToken, async (req, res) => {
   }
 });
 
-/**
- * GET /api/staff/search - Search staff
- */
 app.get('/api/staff/search', authenticateToken, async (req, res) => {
   try {
     const { q } = req.query;
@@ -1383,6 +1333,350 @@ app.get('/api/staff/search', authenticateToken, async (req, res) => {
   }
 });
 
+// ============ IZIN ONLINE ENDPOINTS ============
+
+/**
+ * GET /api/izin - Get all izin
+ */
+app.get('/api/izin', authenticateToken, async (req, res) => {
+  try {
+    const snapshot = await db.ref('izin').once('value');
+    const data = snapshot.val();
+    const izinList = [];
+    
+    if (data) {
+      Object.keys(data).forEach(key => {
+        izinList.push({ id: key, ...data[key] });
+      });
+    }
+    
+    // Sort by submittedAt descending (newest first)
+    izinList.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
+    
+    res.json({ 
+      success: true, 
+      data: izinList, 
+      total: izinList.length 
+    });
+  } catch (error) {
+    console.error('Get izin error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * GET /api/izin/:id - Get izin by ID
+ */
+app.get('/api/izin/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const snapshot = await db.ref(`izin/${id}`).once('value');
+    const data = snapshot.val();
+    
+    if (!data) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Izin not found' 
+      });
+    }
+    
+    res.json({ 
+      success: true, 
+      data: { id, ...data } 
+    });
+  } catch (error) {
+    console.error('Get izin by ID error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * POST /api/izin - Create new izin
+ */
+app.post('/api/izin', authenticateToken, upload.single('attachment'), async (req, res) => {
+  try {
+    const { 
+      type, 
+      startDate, 
+      endDate, 
+      reason, 
+      studentId, 
+      studentName, 
+      kelas, 
+      jurusan 
+    } = req.body;
+    
+    // Validate required fields
+    if (!type || !startDate || !endDate || !reason) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Type, startDate, endDate, and reason are required' 
+      });
+    }
+    
+    let attachmentUrl = null;
+    let attachmentPath = null;
+    
+    // Upload attachment if exists
+    if (req.file) {
+      const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
+      if (!allowedMimes.includes(req.file.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid file type. Only JPG, PNG, and PDF are allowed.'
+        });
+      }
+      
+      if (req.file.size > 2 * 1024 * 1024) {
+        return res.status(400).json({
+          success: false,
+          error: 'File size must be less than 2MB'
+        });
+      }
+      
+      const result = await uploadToSupabase(
+        req.file.buffer,
+        req.file.originalname,
+        'izin',
+        req.user.userId
+      );
+      
+      if (result.success) {
+        attachmentUrl = result.url;
+        attachmentPath = result.path;
+      }
+    }
+    
+    const newIzin = {
+      studentId: studentId || req.user.userId,
+      studentName: studentName || req.user.name || 'User',
+      kelas: kelas || '-',
+      jurusan: jurusan || '-',
+      type: type,
+      startDate: startDate,
+      endDate: endDate,
+      reason: reason,
+      attachment: attachmentUrl,
+      attachmentPath: attachmentPath,
+      status: 'pending',
+      submittedBy: req.user.name || req.user.email || 'system',
+      submittedAt: new Date().toISOString(),
+      approvedBy: null,
+      approvedAt: null,
+      rejectReason: null,
+      rejectedAt: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+
+    const ref = db.ref('izin').push();
+    await ref.set(newIzin);
+    
+    res.status(201).json({ 
+      success: true, 
+      message: 'Izin submitted successfully',
+      data: { id: ref.key, ...newIzin }
+    });
+  } catch (error) {
+    console.error('Create izin error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * PUT /api/izin/:id/approve - Approve izin
+ */
+app.put('/api/izin/:id/approve', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { approvedBy } = req.body;
+    
+    // Check if izin exists
+    const snapshot = await db.ref(`izin/${id}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Izin not found' 
+      });
+    }
+    
+    const izinData = snapshot.val();
+    
+    // Check if already processed
+    if (izinData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Izin already ${izinData.status}`
+      });
+    }
+    
+    const updates = {
+      status: 'approved',
+      approvedBy: approvedBy || req.user.name || req.user.email || 'Admin',
+      approvedAt: new Date().toISOString(),
+      updatedAt: Date.now()
+    };
+    
+    await db.ref(`izin/${id}`).update(updates);
+    
+    const updatedSnapshot = await db.ref(`izin/${id}`).once('value');
+    
+    res.json({ 
+      success: true, 
+      message: 'Izin approved successfully',
+      data: { id, ...updatedSnapshot.val() }
+    });
+  } catch (error) {
+    console.error('Approve izin error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * PUT /api/izin/:id/reject - Reject izin
+ */
+app.put('/api/izin/:id/reject', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rejectReason } = req.body;
+    
+    if (!rejectReason || !rejectReason.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Reject reason is required'
+      });
+    }
+    
+    // Check if izin exists
+    const snapshot = await db.ref(`izin/${id}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Izin not found' 
+      });
+    }
+    
+    const izinData = snapshot.val();
+    
+    // Check if already processed
+    if (izinData.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        error: `Izin already ${izinData.status}`
+      });
+    }
+    
+    const updates = {
+      status: 'rejected',
+      rejectReason: rejectReason.trim(),
+      rejectedAt: new Date().toISOString(),
+      updatedAt: Date.now()
+    };
+    
+    await db.ref(`izin/${id}`).update(updates);
+    
+    const updatedSnapshot = await db.ref(`izin/${id}`).once('value');
+    
+    res.json({ 
+      success: true, 
+      message: 'Izin rejected successfully',
+      data: { id, ...updatedSnapshot.val() }
+    });
+  } catch (error) {
+    console.error('Reject izin error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * DELETE /api/izin/:id - Delete izin
+ */
+app.delete('/api/izin/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if izin exists
+    const snapshot = await db.ref(`izin/${id}`).once('value');
+    if (!snapshot.exists()) {
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Izin not found' 
+      });
+    }
+    
+    const izinData = snapshot.val();
+    
+    // Delete attachment from Supabase if exists
+    if (izinData.attachmentPath) {
+      await deleteFromSupabase(izinData.attachmentPath);
+    }
+    
+    await db.ref(`izin/${id}`).remove();
+    
+    res.json({ 
+      success: true, 
+      message: 'Izin deleted successfully',
+      data: { id, ...izinData }
+    });
+  } catch (error) {
+    console.error('Delete izin error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
+/**
+ * GET /api/izin/stats - Get izin statistics
+ */
+app.get('/api/izin/stats', authenticateToken, async (req, res) => {
+  try {
+    const snapshot = await db.ref('izin').once('value');
+    const data = snapshot.val();
+    const izinList = [];
+    
+    if (data) {
+      Object.keys(data).forEach(key => {
+        izinList.push({ id: key, ...data[key] });
+      });
+    }
+    
+    const total = izinList.length;
+    const pending = izinList.filter(izin => izin.status === 'pending').length;
+    const approved = izinList.filter(izin => izin.status === 'approved').length;
+    const rejected = izinList.filter(izin => izin.status === 'rejected').length;
+    const sakit = izinList.filter(izin => izin.type === 'sakit').length;
+    const keperluan = izinList.filter(izin => izin.type === 'keperluan').length;
+    
+    res.json({
+      success: true,
+      data: { total, pending, approved, rejected, sakit, keperluan }
+    });
+  } catch (error) {
+    console.error('Get izin stats error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message || 'Internal server error' 
+    });
+  }
+});
+
 // ============ ADMIN ROUTES ============
 
 app.get('/api/users', authenticateToken, requireAdmin, async (req, res) => {
@@ -1405,7 +1699,6 @@ app.delete('/api/users/:userId', authenticateToken, requireAdmin, async (req, re
   try {
     const { userId } = req.params;
     
-    // Check if user exists
     const snapshot = await db.ref(`users/${userId}`).once('value');
     if (!snapshot.exists()) {
       return res.status(404).json({ success: false, error: 'User not found' });
@@ -1424,9 +1717,11 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
     const usersSnapshot = await db.ref('users').once('value');
     const attendanceSnapshot = await db.ref('attendance').once('value');
     const staffSnapshot = await db.ref('staff').once('value');
+    const izinSnapshot = await db.ref('izin').once('value');
     
     const totalUsers = usersSnapshot.numChildren();
     const totalStaff = staffSnapshot.numChildren();
+    const totalIzin = izinSnapshot.numChildren();
     
     let totalAttendance = 0, todayAttendance = 0, lateToday = 0;
     const today = new Date().toISOString().split('T')[0];
@@ -1450,7 +1745,8 @@ app.get('/api/stats/summary', authenticateToken, requireAdmin, async (req, res) 
         totalStaff,
         totalAttendance, 
         todayAttendance, 
-        lateToday, 
+        lateToday,
+        totalIzin,
         lastUpdated: new Date().toISOString() 
       }
     });
@@ -1507,6 +1803,15 @@ if (require.main === module) {
 ║  ✅ PUT    /api/staff/:id  - Update staff                                   ║
 ║  ✅ DELETE /api/staff/:id  - Delete staff                                   ║
 ║  ✅ GET    /api/staff/search - Search staff                                 ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║  Izin Online:                                                               ║
+║  ✅ GET    /api/izin        - Get all izin                                 ║
+║  ✅ GET    /api/izin/:id    - Get izin by ID                              ║
+║  ✅ POST   /api/izin        - Create izin (with attachment upload)          ║
+║  ✅ PUT    /api/izin/:id/approve - Approve izin                            ║
+║  ✅ PUT    /api/izin/:id/reject  - Reject izin                            ║
+║  ✅ DELETE /api/izin/:id    - Delete izin                                  ║
+║  ✅ GET    /api/izin/stats  - Get izin statistics                          ║
 ╠══════════════════════════════════════════════════════════════════════════════╣
 ║  Reset Password Features:                                                   ║
 ║  📧 Email Reset: ✅ (via Firebase Auth)                                      ║
